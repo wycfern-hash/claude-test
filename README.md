@@ -68,6 +68,12 @@
 
 （Mac/Linux 用 `./start.sh`。）
 
+**Windows 常見問題**
+- 雙擊 `start.bat` 說「已被封鎖」：對 ZIP 檔（解壓縮前）按右鍵 → 內容 → 勾「解除封鎖」→ 套用，再解壓縮；或對 `start.bat` 按右鍵 → 內容 → 解除封鎖；或在資料夾開 PowerShell 執行 `Get-ChildItem -Recurse . | Unblock-File`。
+- 藍色「Windows 已保護您的電腦」：點「更多資訊」→「仍要執行」。
+- 完全不想用 `start.bat`：在資料夾開命令提示字元，依序執行 `python -m venv .venv`、`.venv\Scripts\pip install -r requirements.txt`、`.venv\Scripts\python -m shopee_clips`（前兩行只有第一次需要）。
+- `start.bat` 刻意只用英文字：批次檔含中文在繁體中文 Windows 上會被切壞指令。
+
 ## 圖片來源：上網找 vs AI 生成（每個商品可單獨選）
 | | 上網找圖當參考（預設） | 純 AI 生成 |
 |---|---|---|

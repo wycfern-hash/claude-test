@@ -1,12 +1,33 @@
 @echo off
-chcp 65001 >nul
-cd /d %~dp0
-if not exist .env copy .env.example .env >nul
-if not exist .venv (
-  echo 第一次執行：安裝套件中（約 1-2 分鐘）...
-  python -m venv .venv || (echo 找不到 Python，請先安裝 Python 3.11+ 並勾選 Add to PATH & pause & exit /b 1)
-  .venv\Scripts\pip install -r requirements.txt
+setlocal
+cd /d "%~dp0"
+if not exist .env if exist .env.example copy .env.example .env >nul
+
+set PY=python
+where py >nul 2>nul && set PY=py -3
+
+if not exist .venv\Scripts\python.exe (
+  echo First run: installing packages, this takes about 1-2 minutes...
+  %PY% -m venv .venv
+  if errorlevel 1 (
+    echo.
+    echo ERROR: could not create the Python environment.
+    echo Install Python 3.11 or newer from python.org and tick "Add python.exe to PATH", then run this file again.
+    pause
+    exit /b 1
+  )
+  .venv\Scripts\python -m pip install -r requirements.txt
+  if errorlevel 1 (
+    echo.
+    echo ERROR: package install failed. Read the messages above.
+    pause
+    exit /b 1
+  )
 )
-where ffmpeg >nul 2>nul || echo [警告] 找不到 ffmpeg，影片合成會失敗。請在命令列執行: winget install ffmpeg
+
+where ffmpeg >nul 2>nul || echo [WARNING] ffmpeg not found - video making will fail. Run in a command prompt: winget install ffmpeg
+
+echo.
+echo Starting. Open http://localhost:8000 in your browser. Keep this window open.
 .venv\Scripts\python -m shopee_clips
 pause
