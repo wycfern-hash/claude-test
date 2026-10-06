@@ -18,7 +18,6 @@ PROMPT = """你是台灣蝦皮短影音的文案。根據下列商品資訊（�
 我指定的賣點（有的話優先使用，沒有就由你歸納）：{user_points}
 JSON 欄位：hook, selling_points(3 個字串), cta, voiceover, video_title(30 字內), caption(100 字內), hashtags(3~5 個字串){extra_fields}
 """
-VIDEO_PROMPT_PROVIDERS = ("veo", "fal", "flow", "flow_browser")
 
 
 def clips_needed() -> int:
@@ -65,11 +64,11 @@ def from_template(row) -> dict:
     }
 
 
-def from_llm(row) -> dict:
+def from_llm(row, mode: str = "slideshow") -> dict:
     from .imagegen import ref_files
 
     n = clips_needed()
-    with_video = config.VIDEO_PROVIDER in VIDEO_PROMPT_PROVIDERS
+    with_video = mode == "ai"
     extra = f"- video_prompts：{n} 個給影片模型的英文畫面描述（鏡頭、動作、光線），依序延續同一商品與場景，不要疊字。\n" if with_video else ""
     prompt = PROMPT.format(
         extra=extra, extra_fields=", video_prompts(字串陣列)" if with_video else "",
@@ -81,17 +80,17 @@ def from_llm(row) -> dict:
     return s
 
 
-def get_script(row) -> dict:
-    """已有成品腳本就沿用；否則 AI（有 key）或範本。保留 user_points。"""
+def get_script(row, mode: str = "slideshow") -> dict:
+    """已有成品腳本就沿用（AI 影片模式還需要有影片提示詞，沒有就重生）；否則 AI（有 key）或範本。保留 user_points。"""
     try:
         cur = json.loads(row["script"])
     except ValueError:
         cur = {}
-    if cur.get("video_title"):
+    if cur.get("video_title") and (mode != "ai" or cur.get("video_prompts") or cur.get("video_prompt_1")):
         return cur
     if config.TEXT_PROVIDER != "template" and providers.configured("text"):
         try:
-            s = from_llm(row)
+            s = from_llm(row, mode)
         except Exception:  # noqa: BLE001  額度用完等 → 有賣點可用就退回範本，否則把錯誤丟出來
             s = from_template(row)
     else:

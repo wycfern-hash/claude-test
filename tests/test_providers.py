@@ -58,7 +58,9 @@ def test_password_gate():
 def test_configured_and_models():
     assert not providers.configured("image")
     config.save_env({"GEMINI_API_KEY": "k"})
-    assert providers.configured("image") and providers.configured("text") and providers.configured("video") is False
+    assert providers.configured("image") and providers.configured("text") and providers.configured("video")  # 一支 Gemini key：腳本+圖片+Veo
+    config.save_env({"VIDEO_PROVIDER": "fal"})
+    assert not providers.configured("video")                                                                   # fal 要另外的 key
     assert config.model_for("image") == "gemini-2.5-flash-image"
     config.save_env({"VIDEO_PROVIDER": "fal", "FAL_KEY": "f"})
     assert providers.configured("video") and "kling" in config.model_for("video") and config.clip_seconds() == 5
@@ -79,7 +81,7 @@ def test_api_image_then_video_pipeline(monkeypatch):
 
     if not shutil.which("ffmpeg"):
         pytest.skip("no ffmpeg")
-    config.save_env({"GEMINI_API_KEY": "k", "TTS": "0", "IMAGES_PER_PRODUCT": "3", "VIDEO_PROVIDER": "veo"})
+    config.save_env({"GEMINI_API_KEY": "k", "TTS": "0", "IMAGES_PER_PRODUCT": "3", "VIDEO_MODE": "ai", "VIDEO_PROVIDER": "veo"})
     with db.connect() as conn:
         pid = _row(conn, ref_images='["http://x/0.jpg"]')
     ref = config.REF_DIR / str(pid)
@@ -122,7 +124,7 @@ def test_api_image_then_video_pipeline(monkeypatch):
 def test_llm_script_and_fallback(monkeypatch):
     from shopee_clips import scriptgen
 
-    config.save_env({"GEMINI_API_KEY": "k", "VIDEO_PROVIDER": "fal", "FAL_KEY": "f"})
+    config.save_env({"GEMINI_API_KEY": "k", "VIDEO_MODE": "ai", "VIDEO_PROVIDER": "fal", "FAL_KEY": "f"})
     with db.connect() as conn:
         pid = _row(conn)
         got = {}
@@ -133,7 +135,7 @@ def test_llm_script_and_fallback(monkeypatch):
                     "caption": "cap", "hashtags": ["x"], "video_prompts": ["p1", "p2", "p3"]}
 
         monkeypatch.setattr(providers, "text_json", fake_text)
-        s = scriptgen.get_script(db.get(conn, pid))
+        s = scriptgen.get_script(db.get(conn, pid), "ai")
         assert s["selling_points"] == ["a", "b", "c"] and "3 個給影片模型" in got["prompt"]   # fal 5 秒 → 3 段
         db.update(conn, pid, script="{}")
 
@@ -141,7 +143,7 @@ def test_llm_script_and_fallback(monkeypatch):
             raise RuntimeError("quota")
 
         monkeypatch.setattr(providers, "text_json", boom)
-        s2 = scriptgen.get_script(db.get(conn, pid))                      # AI 失敗 → 退回商品說明原句，不編造
+        s2 = scriptgen.get_script(db.get(conn, pid), "ai")                      # AI 失敗 → 退回商品說明原句，不編造
         assert s2["selling_points"] == ["內膽304不鏽鋼", "保溫12小時"]
 
 
@@ -179,5 +181,94 @@ def test_openai_and_claude_payloads(monkeypatch):
 
 def test_check_reports_missing_key():
     assert "❌" in providers.check("text")           # 預設 gemini 但沒填 key
-    config.save_env({"VIDEO_PROVIDER": "slideshow"})
+    config.save_env({"VIDEO_PROVIDER": "flow"})
     assert "✅" in providers.check("video")
+
+
+def _approved(conn, key, mode, n_imgs=5):
+    from PIL import Image
+
+    pid = db.add_product(conn, f"https://shopee.tw/p-i.1.{key}", title=f"商品{key}")
+    d = config.IMG_DIR / str(pid)
+    d.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i in range(n_imgs):
+        f = d / f"{i}.png"
+        Image.new("RGB", (600, 900), (i * 40, 90, 160)).save(f)
+        paths.append(str(f.relative_to(config.DATA_DIR)))
+    db.update(conn, pid, script=json.dumps({"user_points": ["賣點甲", "賣點乙", "賣點丙"]}, ensure_ascii=False))
+    db.move(conn, pid, "image_approved", selected_image=paths[0], selected_images=json.dumps(paths), video_mode=mode)
+    return pid
+
+
+def test_two_video_modes_side_by_side(monkeypatch):
+    """同一輪：A 圖片合成（免費不限量）與 B AI 生成（受每日上限）可以混用，各商品各走各的。"""
+    from shopee_clips import videogen
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("no ffmpeg")
+    config.save_env({"GEMINI_API_KEY": "k", "TTS": "0", "VIDEO_PROVIDER": "veo", "DAILY_GEN_CAP": "1"})
+    ai_calls = []
+
+    def fake_clip(prompt, image_path, out):
+        ai_calls.append(prompt)
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=s=720x1280:d=8:r=24", "-pix_fmt", "yuv420p", str(out)],
+                       check=True, capture_output=True)
+
+    monkeypatch.setattr(providers, "video_clip", fake_clip)
+    with db.connect() as conn:
+        a1, a2 = _approved(conn, 1, "slideshow"), _approved(conn, 2, "slideshow")
+        b1, b2 = _approved(conn, 3, "ai"), _approved(conn, 4, "ai")
+        assert videogen.run(conn) == 3                      # 2 個合成 + AI 只剩 1 個額度
+        st = {p: db.get(conn, p)["status"] for p in (a1, a2, b1, b2)}
+        assert st == {a1: "video_review", a2: "video_review", b1: "video_review", b2: "image_approved"}
+        assert db.get(conn, b1)["video_mode"] == "ai" and db.get(conn, a1)["video_mode"] == "slideshow"
+        assert len(ai_calls) == 2 and all("Vertical 9:16" in c for c in ai_calls)   # 腳本的影片提示詞，8 秒 ×2 段
+        assert db.generated_today(conn) == 1               # 只有 AI 計入每日上限
+        assert videogen.run(conn) == 0                      # 今天額度用完，b2 等明天；不重複處理
+    for pid in (a1, b1):
+        with db.connect() as conn:
+            out = config.DATA_DIR / db.get(conn, pid)["video_path"]
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
+                                   capture_output=True, text=True).stdout)
+        assert 14.5 < dur < 15.5
+
+
+def test_ai_mode_regenerates_script_with_video_prompts(monkeypatch):
+    """商品先以 A 產過腳本（沒有影片提示詞），之後改選 B，會補上影片提示詞。"""
+    from shopee_clips import scriptgen
+
+    with db.connect() as conn:
+        pid = _approved(conn, 1, "slideshow")
+        s_a = scriptgen.get_script(db.get(conn, pid), "slideshow")
+        s_a["video_prompts"] = []
+        s_a.pop("video_prompt_1", None)
+        db.update(conn, pid, script=json.dumps(s_a, ensure_ascii=False))
+        s_b = scriptgen.get_script(db.get(conn, pid), "ai")
+        assert s_b["video_prompts"] and s_b["user_points"] == ["賣點甲", "賣點乙", "賣點丙"]
+
+
+def test_web_saves_video_mode_per_product():
+    from shopee_clips.web import app
+
+    c = TestClient(app)
+    with db.connect() as conn:
+        pid = db.add_product(conn, "https://shopee.tw/A-i.1.2", title="測試")
+        db.move(conn, pid, "image_review", images='["images/1/0.png"]')
+    html = c.get("/images").text
+    assert "A. 圖片合成" in html and "B. AI 生成影片" in html
+    c.post(f"/images/{pid}", data={"act": "approve", "selected": "images/1/0.png", "video_mode": "ai"})
+    with db.connect() as conn:
+        assert db.get(conn, pid)["video_mode"] == "ai"
+
+
+def test_legacy_video_provider_env(monkeypatch):
+    monkeypatch.setenv("VIDEO_PROVIDER", "slideshow")
+    config.reload()
+    assert (config.VIDEO_MODE, config.VIDEO_PROVIDER) == ("slideshow", "veo")
+    monkeypatch.setenv("VIDEO_PROVIDER", "fal")
+    config.reload()
+    assert (config.VIDEO_MODE, config.VIDEO_PROVIDER) == ("ai", "fal")
+    monkeypatch.setenv("VIDEO_MODE", "slideshow")
+    config.reload()
+    assert config.VIDEO_MODE == "slideshow"

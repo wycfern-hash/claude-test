@@ -93,19 +93,20 @@ def generate_clips(ctx, row, script: dict) -> list[Path]:
     return clips
 
 
-def run(conn, cap_left: int) -> int:
+def run(conn, rows) -> int:
+    """rows：已由 videogen 依影片類型/額度挑好的商品。"""
     from . import browser
     from .scriptgen import get_script
     from .videogen import finish_flow
 
-    rows = [r for r in db.by_status(conn, "image_approved") if not r["error"].startswith(("videogen:", "flow:"))][:cap_left]
+    rows = [r for r in rows if not r["error"].startswith(("videogen:", "flow:"))]
     if not rows:
         return 0
     n = 0
     with browser.open_context() as ctx:
         for row in rows:
             try:
-                script = get_script(row)
+                script = get_script(row, "ai")
                 db.update(conn, row["id"], script=json.dumps(script, ensure_ascii=False))
                 clips = generate_clips(ctx, row, script)
                 finish_flow(conn, row["id"], clips)

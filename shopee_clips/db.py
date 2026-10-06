@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS products (
   selected_image TEXT NOT NULL DEFAULT '',
   selected_images TEXT NOT NULL DEFAULT '[]',
   script TEXT NOT NULL DEFAULT '{}',
+  video_mode TEXT NOT NULL DEFAULT '',
   video_path TEXT NOT NULL DEFAULT '',
   video_title TEXT NOT NULL DEFAULT '',
   video_caption TEXT NOT NULL DEFAULT '',
@@ -130,10 +131,10 @@ def counts(conn) -> dict:
 
 
 def generated_today(conn) -> int:
-    """今天產出影片的數量（以 updated_at 近似），用來擋 Veo 花費。"""
+    """今天用 AI 生成的影片數（以 updated_at 近似），用來擋 API 花費/Flow 點數；圖片合成不計。"""
     day = datetime.now(timezone.utc).date().isoformat()
     return conn.execute(
-        "SELECT COUNT(*) FROM products WHERE video_path!='' AND status IN ('video_review','video_approved','uploaded') AND updated_at LIKE ?",
+        "SELECT COUNT(*) FROM products WHERE video_mode='ai' AND video_path!='' AND status IN ('video_review','video_approved','uploaded') AND updated_at LIKE ?",
         (day + "%",),
     ).fetchone()[0]
 

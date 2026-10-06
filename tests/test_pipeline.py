@@ -108,7 +108,7 @@ def test_manual_upload_to_slideshow_to_video_review(monkeypatch):
 
     if not shutil.which("ffmpeg"):
         pytest.skip("no ffmpeg")
-    monkeypatch.setattr(config, "VIDEO_PROVIDER", "slideshow")
+    monkeypatch.setattr(config, "VIDEO_MODE", "slideshow")
     monkeypatch.setattr(config, "TTS", False)
     with db.connect() as conn:
         pid = db.add_product(conn, "https://shopee.tw/A-i.1.2", title="保溫杯")

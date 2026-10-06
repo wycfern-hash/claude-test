@@ -12,7 +12,16 @@
 |---|---|---|
 | 腳本文案（賣點、腳本、標題、文案、配音稿） | `gemini`（有免費額度）／`openai`（含相容服務，填 Base URL）／`claude`／`template`（不用 AI，吃你填的賣點） | 對應供應商的 key |
 | 圖片 | `gemini`／`openai`／`browser`（操控 Chrome 用 Gemini 網頁）／`manual`（手動上傳） | API 供應商要 key；後兩者不用 |
-| 影片 | `veo`（Gemini API）／`fal`（fal.ai 的 Kling 等圖生影片）／`slideshow`（5 張圖合成，免費）／`flow_browser`／`flow` | veo 用 Gemini key；fal 用 FAL_KEY |
+| 影片 | 兩種類型見下方；類型 B 的引擎：`veo`（Gemini API）／`fal`（fal.ai 的 Kling 等）／`flow_browser`／`flow` | veo 用 Gemini key；fal 用 FAL_KEY |
+
+### 兩種影片類型（每個商品可單獨選，預設在設定頁）
+| | A. 圖片合成 | B. AI 生成影片 |
+|---|---|---|
+| 做法 | 核准的 5 張新圖 × 3 秒，推近動畫 + 字幕 + 曉臻配音，ffmpeg 本機合成 | 用新生成的圖當起始畫面，依腳本的「影片提示詞」讓 AI 逐段生成，接成 15 秒並換上曉臻配音 |
+| 費用 | 免費、不限量、不用 API | 花 API 費用（veo/fal）或 Flow 點數；受 `DAILY_GEN_CAP` 每日上限限制 |
+| 腳本用途 | 5 個字幕（hook／3 賣點／CTA，畫面上不會出現這些標籤字樣） | 腳本會多產生影片提示詞（鏡頭、動作、光線） |
+
+在「審圖」或「待產圖」頁，每個商品都有 A/B 選項；沒選就用設定頁的預設。同一批商品可以混用，A 不計入每日 AI 上限。一個商品仍然只會有一支影片。
 
 - **腳本會自己生成**：選 AI 供應商並填 key，程式會把商品說明＋商品圖交給模型，自己歸納 3 個賣點，產出 hook、腳本、配音稿、標題、貼文文案、hashtag。你在待產圖/審圖頁填的賣點會優先採用。沒填 key 或 AI 失敗時，退回你填的賣點（或商品說明原句），不會編造。
 - **一支 Gemini key 可以同時做腳本 + 圖片 + 影片（Veo）**；不想用付費影片就選 `slideshow`。

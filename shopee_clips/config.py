@@ -25,7 +25,8 @@ SPEC = [
     ("IMAGE_MODEL", "", str),
     ("IMAGES_PER_PRODUCT", 5, int),
     # 影片
-    ("VIDEO_PROVIDER", "slideshow", str),  # veo | fal | slideshow | flow_browser | flow
+    ("VIDEO_MODE", "slideshow", str),      # 預設影片類型：slideshow=5 張圖合成 | ai=用新圖+腳本讓 AI 生成（每個商品可在審圖頁單獨改）
+    ("VIDEO_PROVIDER", "veo", str),        # AI 影片引擎（VIDEO_MODE=ai 時用）：veo | fal | flow_browser | flow
     ("VIDEO_MODEL", "", str),
     ("VIDEO_CLIP_SECONDS", 0, int),        # 單段秒數，0 = 供應商預設（veo 8、fal 5）
     ("FAL_EXTRA_ARGS", "", str),           # fal 模型額外參數 JSON，例如 {"duration":"5"}
@@ -81,6 +82,13 @@ def reload() -> None:
     for name, default, typ in SPEC:
         raw = os.getenv(name)
         g[name] = default if raw is None else _cast(raw, typ)
+    # 舊版相容：VIDEO_PROVIDER=slideshow 代表「圖片合成」模式；其他值且沒設 VIDEO_MODE 代表 AI 模式
+    if g["VIDEO_PROVIDER"] == "slideshow":
+        g["VIDEO_PROVIDER"] = "veo"
+        if os.getenv("VIDEO_MODE") is None:
+            g["VIDEO_MODE"] = "slideshow"
+    elif os.getenv("VIDEO_PROVIDER") and os.getenv("VIDEO_MODE") is None:
+        g["VIDEO_MODE"] = "ai"
     # 舊版相容：IMAGE_PROVIDER=auto/api 等同 gemini
     if g["IMAGE_PROVIDER"] in ("auto", "api"):
         g["IMAGE_PROVIDER"] = "gemini"

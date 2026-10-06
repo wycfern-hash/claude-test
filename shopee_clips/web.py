@@ -54,6 +54,10 @@ def home():
         failed = db.by_status(conn, "failed")
     stats = " ｜ ".join(f"{k}: {v}" for k, v in c.items() if v)
     def mark(role, label):
+        if role == "video":
+            if config.VIDEO_MODE == "slideshow":
+                return f"{label}: 預設 A 圖片合成 ✅"
+            return f"{label}: 預設 B AI({config.VIDEO_PROVIDER}) " + ("✅" if config.VIDEO_PROVIDER in ("flow", "flow_browser") or providers.configured("video") else "❌ 尚未填 API key")
         pv = getattr(config, f"{role.upper()}_PROVIDER")
         ok = pv in ("slideshow", "manual", "browser", "flow", "flow_browser", "template") or providers.configured(role)
         return f"{label}: {pv} {'✅' if ok else '❌ 尚未填 API key'}"
@@ -150,6 +154,13 @@ def retry_failed():
     return back()
 
 
+def mode_box(r) -> str:
+    cur = r["video_mode"] or config.VIDEO_MODE
+    ai_note = "（引擎：" + config.VIDEO_PROVIDER + "，會花 API 費用/Flow 點數）"
+    return (f'<div>影片類型：<label><input type=radio name=video_mode value=slideshow {"checked" if cur == "slideshow" else ""}> A. 圖片合成 15 秒（免費）</label> '
+            f'<label><input type=radio name=video_mode value=ai {"checked" if cur == "ai" else ""}> B. AI 生成影片（新圖+腳本）{e(ai_note)}</label></div>')
+
+
 def points_box(r) -> str:
     cur = "\n".join(scriptgen.user_points(r))
     return f'賣點（選填，一行一個，最多 3 個；留空會用 AI/商品說明）<textarea name=points rows=3>{e(cur)}</textarea>'
@@ -179,7 +190,7 @@ def todo():
 <b>#{r["id"]} {e(r["title"] or r["url"])}</b> <a href="{e(r["url"])}" target=_blank>原商品</a>
 <div>參考圖（點圖下載，貼進 Gemini 當參考）：{refs or "（尚未抓到，稍等或檢查商品資料）"}</div>
 <details><summary>{config.IMAGES_PER_PRODUCT} 個提示詞</summary>{prompts}</details>
-{points_box(r)}
+{points_box(r)}{mode_box(r)}
 <div>上傳 {config.IMAGES_PER_PRODUCT} 張你產好的圖（會依序對應：開場、賣點1~3、結尾）
 <input type=file name=files multiple accept="image/*"></div>
 <button>上傳並送去產片</button> <button name=skip value=1 class=g formnovalidate>不做這個商品</button></form>"""
@@ -188,7 +199,8 @@ def todo():
 
 
 @app.post("/todo/{pid}")
-async def todo_upload(pid: int, files: list[UploadFile] = File([]), points: str = Form(""), skip: str = Form("")):
+async def todo_upload(pid: int, files: list[UploadFile] = File([]), points: str = Form(""), skip: str = Form(""),
+                      video_mode: str = Form("")):
     with db.connect() as conn:
         if skip:
             db.move(conn, pid, "skipped")
@@ -209,7 +221,7 @@ async def todo_upload(pid: int, files: list[UploadFile] = File([]), points: str 
         if saved:
             save_points(conn, pid, points)
             db.move(conn, pid, "image_approved", images=json.dumps(saved), selected_image=saved[0],
-                    selected_images=json.dumps(saved))
+                    selected_images=json.dumps(saved), video_mode=video_mode if video_mode in ("slideshow", "ai") else "")
     return back("/todo")
 
 
@@ -224,17 +236,19 @@ def images():
             f'<img src="/media/{e(p)}"></label>' for i, p in enumerate(json.loads(r["images"])))
         cards += f"""<form method=post class=card action=/images/{r["id"]}>
 <b>#{r["id"]} {e(r["title"])}</b> <a href="{e(r["url"])}" target=_blank>原商品</a><div class=row>{opts}</div>
-{points_box(r)}<button name=act value=approve>核准勾選的圖</button> <button name=act value=reject class=g>退回重產</button>
+{points_box(r)}{mode_box(r)}<button name=act value=approve>核准勾選的圖</button> <button name=act value=reject class=g>退回重產</button>
 <button name=act value=skip class=g>不做這個商品</button></form>"""
     return page(f"<h2>審圖（{len(rows)}）</h2>{cards or '沒有待審'}")
 
 
 @app.post("/images/{pid}")
-def images_act(pid: int, act: str = Form(...), selected: list[str] = Form([]), points: str = Form("")):
+def images_act(pid: int, act: str = Form(...), selected: list[str] = Form([]), points: str = Form(""),
+               video_mode: str = Form("")):
     with db.connect() as conn:
         if act == "approve" and selected:
             save_points(conn, pid, points)
-            db.move(conn, pid, "image_approved", selected_image=selected[0], selected_images=json.dumps(selected))
+            db.move(conn, pid, "image_approved", selected_image=selected[0], selected_images=json.dumps(selected),
+                    video_mode=video_mode if video_mode in ("slideshow", "ai") else "")
         elif act == "reject":
             db.move(conn, pid, "sourced", images="[]")
         elif act == "skip":
@@ -246,8 +260,9 @@ def images_act(pid: int, act: str = Form(...), selected: list[str] = Form([]), p
 def flow():
     """Flow 產片：下載起始圖、複製提示詞，到 Flow 用你的點數產，再把 mp4 傳回來。"""
     with db.connect() as conn:
-        rows = [r for r in db.by_status(conn, "image_approved") if json.loads(r["script"] or "{}").get("video_title")]
-    note = "" if config.VIDEO_PROVIDER == "flow" else "<p>目前 VIDEO_PROVIDER 不是 flow，影片會自動合成；這頁只在你想改用 Flow 時用。</p>"
+        rows = [r for r in db.by_status(conn, "image_approved")
+                if videogen.effective_mode(r) == "ai" and json.loads(r["script"] or "{}").get("video_title")]
+    note = "" if config.VIDEO_PROVIDER == "flow" else "<p>目前 AI 影片引擎不是「手動 Flow」，AI 影片會自動產；這頁只在引擎選 flow 時用。</p>"
     cards = ""
     for r in rows:
         sc = json.loads(r["script"])
@@ -307,9 +322,9 @@ PROVIDER_OPTIONS = {
                       ("template", "不用 AI（範本 + 我填的賣點）")],
     "IMAGE_PROVIDER": [("gemini", "Gemini 產圖（API）"), ("openai", "OpenAI 產圖（API）"),
                        ("browser", "操控我的 Chrome 用 Gemini 網頁（免 API）"), ("manual", "手動上傳（免 API）")],
-    "VIDEO_PROVIDER": [("slideshow", "用圖合成 15 秒（免費、不用 API）"), ("veo", "Veo（Gemini API，付費）"),
-                       ("fal", "fal.ai 圖生影片（Kling 等，付費）"), ("flow_browser", "操控我的 Chrome 用 Flow 點數（免 API）"),
-                       ("flow", "手動：我自己在 Flow 產、上傳 mp4")],
+    "VIDEO_MODE": [("slideshow", "A. 圖片合成 15 秒（免費、不用 API）"), ("ai", "B. AI 生成影片（用新圖+腳本，花錢/點數）")],
+    "VIDEO_PROVIDER": [("veo", "Veo（Gemini API，付費）"), ("fal", "fal.ai 圖生影片（Kling 等，付費）"),
+                       ("flow_browser", "操控我的 Chrome 用 Flow 點數（免 API）"), ("flow", "手動：我自己在 Flow 產、上傳 mp4")],
     "UPLOAD_MODE": [("manual", "只匯出上架包（手機/電腦自己傳）"), ("dryrun", "自動填好但不發佈（先測這個）"),
                     ("auto", "自動發佈")],
     "TTS": [("1", "開（曉臻）"), ("0", "關")],
@@ -318,14 +333,14 @@ PROVIDER_OPTIONS = {
 SETTING_GROUPS = [
     ("腳本文案（標題、賣點、配音稿、貼文文案）", ["TEXT_PROVIDER", "TEXT_MODEL"], "text"),
     ("圖片（用賣家圖當參考，重新生成全新商品圖）", ["IMAGE_PROVIDER", "IMAGE_MODEL", "IMAGES_PER_PRODUCT"], "image"),
-    ("影片", ["VIDEO_PROVIDER", "VIDEO_MODEL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS"], "video"),
+    ("影片（預設類型可在審圖頁逐商品覆蓋）", ["VIDEO_MODE", "VIDEO_PROVIDER", "VIDEO_MODEL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS"], "video"),
     ("API 金鑰（留空 = 不變更；金鑰只存在你電腦的 .env）", ["GEMINI_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "FAL_KEY"], None),
     ("配音與字幕", ["TTS", "TTS_VOICE", "SUBTITLES"], None),
     ("流程與上架", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "SHOPEE_VIDEO_UPLOAD_URL", "AFFILIATE_PICKS_URL", "APP_PASSWORD"], None),
 ]
 LABELS = {
     "TEXT_PROVIDER": "供應商", "TEXT_MODEL": "模型（空白=預設）", "IMAGE_PROVIDER": "供應商", "IMAGE_MODEL": "模型（空白=預設）",
-    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_PROVIDER": "供應商", "VIDEO_MODEL": "模型（空白=預設）",
+    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型", "VIDEO_PROVIDER": "AI 影片引擎（類型 B 用）", "VIDEO_MODEL": "模型（空白=預設）",
     "VIDEO_CLIP_SECONDS": "單段秒數（0=預設）", "FAL_EXTRA_ARGS": "fal 額外參數 JSON（選填）",
     "GEMINI_API_KEY": "Gemini API key", "OPENAI_API_KEY": "OpenAI API key", "OPENAI_BASE_URL": "OpenAI Base URL（相容服務才填）",
     "ANTHROPIC_API_KEY": "Anthropic API key", "FAL_KEY": "fal.ai key", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
