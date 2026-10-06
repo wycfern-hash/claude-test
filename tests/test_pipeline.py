@@ -128,3 +128,48 @@ def test_manual_upload_to_slideshow_to_video_review(monkeypatch):
     dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
                          capture_output=True, text=True).stdout
     assert 14.5 < float(dur) < 15.5
+
+
+def test_flow_clips_to_15s_review(monkeypatch):
+    """Flow 路徑：上傳兩段 8 秒 mp4 → 接起來裁 15 秒、直式 1080x1920 → 進審片。"""
+    import shutil
+    import subprocess
+
+    from shopee_clips import videogen
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("no ffmpeg")
+    monkeypatch.setattr(config, "TTS", False)
+    d = config.DATA_DIR
+    clips = []
+    for i in range(2):
+        p = d / f"in{i}.mp4"
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=s=1280x720:d=8:r=24", "-f", "lavfi", "-i",
+                        "sine=d=8", "-pix_fmt", "yuv420p", "-shortest", str(p)], check=True, capture_output=True)
+        clips.append(p)
+    with db.connect() as conn:
+        pid = db.add_product(conn, "https://shopee.tw/A-i.1.2", title="保溫杯")
+        db.update(conn, pid, script=json.dumps({"user_points": ["a", "b", "c"]}))
+        db.move(conn, pid, "image_approved", selected_image="images/1/0.png")
+        videogen.finish_flow(conn, pid, clips)
+        r = db.get(conn, pid)
+        assert r["status"] == "video_review"
+        out = config.DATA_DIR / r["video_path"]
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height:format=duration",
+                            "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout
+    assert "1080,1920" in probe and any(14.5 < float(x) < 15.5 for x in probe.split() if x.replace(".", "").isdigit())
+
+
+def test_no_label_text_in_captions():
+    from shopee_clips import slideshow
+
+    texts = slideshow.beats({"hook": "開箱保溫杯！", "selling_points": ["a", "b", "c"], "cta": "點連結"})
+    assert not any(w in t for t in texts for w in ("hook", "賣點", "CTA"))
+
+
+def test_all_pages_render():
+    from shopee_clips.web import app
+
+    c = TestClient(app)
+    for path in ("/", "/todo", "/images", "/flow", "/videos", "/ready"):
+        assert c.get(path).status_code == 200, path

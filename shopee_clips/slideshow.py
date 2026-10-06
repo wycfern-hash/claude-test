@@ -93,7 +93,7 @@ def build(image_paths: list[Path], script: dict, out: Path) -> Path:
     for i, text in enumerate(beats(script)):
         bg, ov, seg = work / f"bg{i}.png", work / f"ov{i}.png", work / f"seg{i}.mp4"
         _cover(Image.open(image_paths[i % len(image_paths)])).save(bg)
-        caption_overlay(text, ov)
+        caption_overlay(text if config.SUBTITLES else "", ov)
         frames = SECONDS_EACH * FPS
         zoom = f"zoompan=z='min(zoom+0.0007,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps={FPS}"
         subprocess.run(

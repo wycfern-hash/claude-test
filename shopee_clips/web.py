@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, imagegen, scriptgen, sourcing, worker
+from . import config, db, gemini_client, imagegen, scriptgen, sourcing, videogen, worker
 
 config.ensure_dirs()
 
@@ -32,7 +32,7 @@ img,video{max-width:100%;border-radius:8px}.row{display:flex;gap:8px;flex-wrap:w
 .row>label{flex:1;min-width:140px}button{padding:10px 16px;border-radius:8px;border:0;background:#ee4d2d;color:#fff;font-size:16px}
 button.g{background:#888}input[type=text],textarea{width:100%;box-sizing:border-box;padding:8px;font:inherit}
 nav a{margin-right:12px}.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}</style>"""
-NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/images">審圖</a><a href="/videos">審片</a><a href="/ready">上架包</a></nav>'
+NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/images">審圖</a><a href="/flow">待產片</a><a href="/videos">審片</a><a href="/ready">上架包</a></nav>'
 
 
 def page(body: str) -> HTMLResponse:
@@ -55,7 +55,8 @@ def home():
 <textarea name=urls rows=4 placeholder="https://shopee.tw/..-i.123.456"></textarea><button>加入</button></form>
 <div class=card><form method=post action=/fetch-picks><button class=g>從分潤後台抓選品</button></form><br>
 <form method=post action=/login><button class=g>開瀏覽器登入蝦皮</button></form>
-<form method=post action=/retry-failed style="margin-top:8px"><button class=g>重試失敗項目</button></form></div>
+<form method=post action=/retry-failed style="margin-top:8px"><button class=g>重試失敗項目</button></form>
+<form method=post action=/check-key style="margin-top:8px"><button class=g>檢查 Gemini key 能不能用</button></form></div>
 {errs}<div class=card><b>執行紀錄</b><pre>{e(chr(10).join(worker.log[-15:]))}</pre></div>""")
 
 
@@ -94,9 +95,20 @@ def login():
     return back()
 
 
+@app.post("/check-key")
+def check_key():
+    def run():
+        for line in gemini_client.check():
+            worker.say(line)
+
+    threading.Thread(target=run, daemon=True).start()
+    return back()
+
+
 @app.post("/retry-failed")
 def retry_failed():
     with db.connect() as conn:
+        conn.execute("UPDATE products SET error='' WHERE status='sourced' AND error LIKE 'imagegen:%'")
         for r in db.by_status(conn, "failed"):
             back_to = "video_approved" if r["video_path"] else ("image_approved" if r["selected_image"] else "sourced")
             db.move(conn, r["id"], back_to, error="")
@@ -193,6 +205,49 @@ def images_act(pid: int, act: str = Form(...), selected: list[str] = Form([]), p
         elif act == "skip":
             db.move(conn, pid, "skipped")
     return back("/images")
+
+
+@app.get("/flow")
+def flow():
+    """Flow 產片：下載起始圖、複製提示詞，到 Flow 用你的點數產，再把 mp4 傳回來。"""
+    with db.connect() as conn:
+        rows = [r for r in db.by_status(conn, "image_approved") if json.loads(r["script"] or "{}").get("video_title")]
+    note = "" if config.VIDEO_PROVIDER == "flow" else "<p>目前 VIDEO_PROVIDER 不是 flow，影片會自動合成；這頁只在你想改用 Flow 時用。</p>"
+    cards = ""
+    for r in rows:
+        sc = json.loads(r["script"])
+        prompts = "".join(
+            f'<textarea id=v{r["id"]}_{i} rows=3 readonly>{e(sc.get(k, ""))}</textarea>'
+            f'<button type=button class=g onclick="navigator.clipboard.writeText(document.getElementById(\'v{r["id"]}_{i}\').value)">複製片段 {i} 提示詞</button>'
+            for i, k in ((1, "video_prompt_1"), (2, "video_prompt_2")))
+        cards += f"""<form method=post enctype=multipart/form-data class=card action=/flow/{r["id"]}>
+<b>#{r["id"]} {e(r["title"])}</b>
+<div>起始圖（Flow 用 Frames to Video，比例選 9:16）：<a href="/media/{e(r["selected_image"])}" download><img src="/media/{e(r["selected_image"])}" width=120></a></div>
+{prompts}
+<div>上傳 Flow 下載的 mp4（1~3 段，依選檔順序接起來，總長裁成 15 秒）<input type=file name=files multiple accept="video/*"></div>
+<button>上傳並合成</button></form>"""
+    return page(f"<h2>待產片（{len(rows)}）</h2>{note}{cards or '沒有待處理商品（審圖核准後，系統備好提示詞才會出現）'}")
+
+
+@app.post("/flow/{pid}")
+def flow_upload(pid: int, files: list[UploadFile] = File([])):
+    d = config.VID_DIR / str(pid) / "flow"
+    d.mkdir(parents=True, exist_ok=True)
+    clips = []
+    for i, f in enumerate(files):
+        data = f.file.read()
+        if data:
+            p = d / f"clip{i}.mp4"
+            p.write_bytes(data)
+            clips.append(p)
+    if clips:
+        with db.connect() as conn:
+            try:
+                videogen.finish_flow(conn, pid, clips)
+            except Exception as ex:  # noqa: BLE001
+                db.update(conn, pid, error=f"flow: {ex}")
+                worker.say(f"#{pid} 合成失敗：{ex}")
+    return back("/flow")
 
 
 @app.get("/videos")

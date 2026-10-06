@@ -67,22 +67,26 @@ def ref_files(pid: int) -> list[Path]:
     return sorted(d.glob("*.jpg")) if d.exists() else []
 
 
+def _manual_only() -> bool:
+    return config.IMAGE_PROVIDER == "manual" or (config.IMAGE_PROVIDER == "auto" and not config.GEMINI_API_KEY)
+
+
 def run(conn) -> int:
+    """auto：有 key 就自動產圖；失敗（沒額度、模型不開放）不重試，改留在「待產圖」頁讓你手動上傳。"""
     n = 0
-    if config.IMAGE_PROVIDER == "manual":
-        # 不呼叫任何 API，只把賣家參考圖抓下來，讓「待產圖」頁顯示給你
-        for row in db.by_status(conn, "sourced"):
-            if json.loads(row["ref_images"]) and not ref_files(row["id"]):
-                try:
-                    download_refs(row["id"], json.loads(row["ref_images"]))
-                except Exception as e:  # noqa: BLE001
-                    db.update(conn, row["id"], error=f"refs: {e}")
-        return 0
     for row in db.by_status(conn, "sourced"):
+        if json.loads(row["ref_images"]) and not ref_files(row["id"]):
+            try:
+                download_refs(row["id"], json.loads(row["ref_images"]))
+            except Exception as e:  # noqa: BLE001
+                db.update(conn, row["id"], error=f"refs: {e}")
+                conn.commit()
+        if _manual_only() or row["error"].startswith("imagegen:"):
+            continue
         try:
             imgs = generate_for(conn, row)
         except Exception as e:  # noqa: BLE001
-            db.update(conn, row["id"], error=f"imagegen: {e}")
+            db.update(conn, row["id"], error=f"imagegen: {str(e)[:300]}")
             conn.commit()
             continue
         db.move(conn, row["id"], "image_review", images=json.dumps(imgs), error="")

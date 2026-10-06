@@ -6,17 +6,18 @@ import re
 
 from . import config
 
-PROMPT = """你是台灣蝦皮短影音的文案。根據下列商品資訊，寫一支 15 秒開箱短影音腳本，輸出 JSON。
+PROMPT = """你是台灣蝦皮短影音的文案。根據下列商品資訊（以及附圖中看得到的商品），自己歸納 3 個最吸引人的賣點，寫一支 15 秒開箱短影音腳本，輸出 JSON。
 限制：
-- 只能使用商品資訊裡有的事實；不可編造規格、功效、認證、銷量或『最低價』；不得有醫療/療效宣稱。
+- 只能使用商品說明或附圖裡確實有的事實；不可編造規格、功效、認證、銷量或『最低價』；不得有醫療/療效宣稱。
 - 繁體中文、口語、節奏快。每個字幕 16 字內。
 - voiceover：整支影片的配音稿，總長 60 字內，依序唸 hook、3 個賣點、CTA（CTA 引導點下方商品連結）。
 {extra}商品：{title}
 價格：{price}
 說明：{description}
-賣家/我提供的賣點（有的話優先使用）：{user_points}
+我指定的賣點（有的話優先使用，沒有就由你歸納）：{user_points}
 JSON 欄位：hook, selling_points(3 個字串), cta, voiceover, video_title(30 字內), caption(100 字內), hashtags(3~5 個字串){extra_fields}
 """
+VIDEO_PROMPT_PROVIDERS = ("veo", "flow")
 VEO_EXTRA = "- video_prompt_1 / video_prompt_2：給影片模型的英文畫面描述（鏡頭、動作、光線），延續同一商品與場景，不要疊字。\n"
 
 
@@ -42,6 +43,8 @@ def from_template(row) -> dict:
         "video_title": row["title"][:30] or "好物開箱",
         "caption": f"{hook} " + " ".join(f"✔{p}" for p in pts) + f" {cta}",
         "hashtags": ["蝦皮", "好物推薦", "開箱"],
+        "video_prompt_1": f"Vertical 9:16 product video: hands unboxing {row['title']} on a clean table, soft natural light, slow camera push-in, no text overlays.",
+        "video_prompt_2": f"Vertical 9:16 close-up details and everyday use of {row['title']}, smooth handheld camera, warm light, no text overlays.",
     }
 
 
@@ -50,14 +53,17 @@ def from_gemini(row) -> dict:
 
     from .gemini_client import client
 
-    veo = config.VIDEO_PROVIDER == "veo"
+    from .imagegen import ref_files
+
+    veo = config.VIDEO_PROVIDER in VIDEO_PROMPT_PROVIDERS
+    imgs = [types.Part.from_bytes(data=p.read_bytes(), mime_type="image/jpeg") for p in ref_files(row["id"])[:3]]
     resp = client().models.generate_content(
         model=config.TEXT_MODEL,
-        contents=PROMPT.format(
+        contents=imgs + [PROMPT.format(
             extra=VEO_EXTRA if veo else "", extra_fields=", video_prompt_1, video_prompt_2" if veo else "",
             title=row["title"], price=row["price"], description=row["description"][:1500],
             user_points="；".join(user_points(row)) or "無",
-        ),
+        )],
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     s = json.loads(resp.text)
@@ -74,6 +80,12 @@ def get_script(row) -> dict:
         cur = {}
     if cur.get("video_title"):
         return cur
-    s = from_gemini(row) if config.GEMINI_API_KEY else from_template(row)
+    if config.GEMINI_API_KEY:
+        try:
+            s = from_gemini(row)
+        except Exception:  # noqa: BLE001  額度用完等 → 有賣點可用就退回範本，否則把錯誤丟出來
+            s = from_template(row)
+    else:
+        s = from_template(row)
     s["user_points"] = cur.get("user_points", [])
     return s

@@ -23,9 +23,10 @@ IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
 TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-2.5-flash")
 VIDEO_MODEL = os.getenv("VIDEO_MODEL", "veo-3.1-generate-preview")
 IMAGES_PER_PRODUCT = _int("IMAGES_PER_PRODUCT", 5)
-IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "manual")  # manual=你自己在 Gemini App 產圖後上傳(免費) | api
-VIDEO_PROVIDER = os.getenv("VIDEO_PROVIDER", "slideshow")  # slideshow(免費) | veo(付費) | manual
+IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "auto")  # auto=有 key 就自動產，失敗改手動上傳 | manual | api
+VIDEO_PROVIDER = os.getenv("VIDEO_PROVIDER", "slideshow")  # slideshow(免費) | flow(你在 Flow 用點數產，上傳回來) | veo(付費)
 FONT_PATH = os.getenv("FONT_PATH", "")
+SUBTITLES = os.getenv("SUBTITLES", "1") == "1"  # slideshow 影片是否燒入字幕（只有內容文字，不會有「賣點1」這類標籤）
 TTS = os.getenv("TTS", "1") == "1"  # 免費 edge-tts 配音
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-TW-HsiaoChenNeural")
 DAILY_UPLOAD_CAP = _int("DAILY_UPLOAD_CAP", 5)
