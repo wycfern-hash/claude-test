@@ -94,7 +94,7 @@ def test_generate_passes_portrait_last_and_web_source_needs_refs(monkeypatch):
     seen = []
     monkeypatch.setattr(providers, "image_bytes", lambda prompt, refs: seen.append((prompt, [p.name for p in refs])) or png())
     with db.connect() as conn:
-        pid = add(conn)
+        pid = add(conn, image_source="web")                       # 明確指定「一定要參考圖」
         gid = char_id(conn, "girl20")
         d = config.DATA_DIR / "characters"
         d.mkdir()
@@ -127,7 +127,7 @@ def test_run_waits_silently_for_refs_but_ai_source_runs(monkeypatch):
     config.save_env({"GEMINI_API_KEY": "k", "IMAGE_PROVIDER": "gemini", "IMAGE_MODEL": "m", "IMAGES_PER_PRODUCT": "1"})
     monkeypatch.setattr(providers, "image_bytes", lambda prompt, refs: png())
     with db.connect() as conn:
-        waiting, ai = add(conn, 1), add(conn, 2, image_source="ai")
+        waiting, ai = add(conn, 1, image_source="web"), add(conn, 2, image_source="ai")
         assert imagegen.run(conn) == 1
         assert db.get(conn, waiting)["status"] == "sourced" and db.get(conn, waiting)["error"] == ""   # 等你去找圖，不報錯
         assert db.get(conn, ai)["status"] == "image_review"

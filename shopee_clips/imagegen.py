@@ -46,8 +46,12 @@ def download_refs(pid: int, urls: list[str]) -> list[Path]:
 
 
 def source_for(row) -> str:
-    """圖片來源：web=上網找圖當參考，AI 重新生成；ai=純 AI 生成（不需參考圖）。"""
-    return row["image_source"] or config.DEFAULT_IMAGE_SOURCE
+    """圖片來源：web=上網找圖當參考，AI 重新生成；ai=純 AI 生成（不需參考圖）。
+    auto（預設）：有參考圖（CSV 的圖片連結、你在「找圖」挑的、上傳的）就用 web，沒有就 ai。"""
+    src = row["image_source"] or config.DEFAULT_IMAGE_SOURCE
+    if src == "auto":
+        return "web" if ref_files(row["id"]) else "ai"
+    return src if src in ("web", "ai") else "ai"
 
 
 def collect_refs(row) -> list[Path]:
@@ -122,9 +126,12 @@ def run(conn) -> int:
 
         return gemini_web.run(conn, config.DAILY_GEN_CAP - db.images_today(conn))
     n = 0
+    cap_left = config.DAILY_GEN_CAP - db.images_today(conn)  # API 費用上限（每日最多處理幾個商品）
     for row in db.by_status(conn, "sourced"):
         if _manual_only() or row["error"].startswith("imagegen:") or not ready_for_gen(row):
             continue
+        if cap_left <= 0:
+            break
         try:
             imgs = generate_for(conn, row)
         except Exception as e:  # noqa: BLE001
@@ -134,4 +141,5 @@ def run(conn) -> int:
         db.move(conn, row["id"], "image_review", images=json.dumps(imgs), error="")
         conn.commit()
         n += 1
+        cap_left -= 1
     return n

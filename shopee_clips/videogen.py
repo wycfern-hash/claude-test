@@ -61,7 +61,7 @@ def _ai_clips(row, script: dict, d: Path) -> list[Path]:
     return clips
 
 
-def run(conn) -> int:
+def run(conn, allow_ai: bool = True) -> int:
     """逐商品依「影片類型」處理：slideshow 本機合成（免費、不限量）；ai 受 DAILY_GEN_CAP 限制。"""
     n = 0
     ai_left = config.DAILY_GEN_CAP - db.generated_today(conn)
@@ -83,6 +83,8 @@ def run(conn) -> int:
                 conn.commit()
                 n += 1
                 continue
+            if not allow_ai:
+                continue  # 還沒按「開始」：AI 影片會花錢/點數，先不跑
             if config.VIDEO_PROVIDER not in ("veo", "fal", "flow_browser", "flow"):
                 raise RuntimeError("此商品選了「類型 B：AI 生成影片」，但設定頁還沒選 AI 影片服務（Veo / fal / Flow）")
             if config.VIDEO_PROVIDER == "flow_browser":

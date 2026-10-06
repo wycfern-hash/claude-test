@@ -110,7 +110,7 @@ def _guess_url_col(rows: list[list[Cell]], hdr_i: int) -> int | None:
     return None
 
 
-def import_table(conn, rows: list[list[Cell]], label: str = "") -> dict:
+def import_table(conn, rows: list[list[Cell]], label: str = "", progress=None) -> dict:
     """匯入一張表（Excel 工作表或 CSV）。自動辨識表頭；支援商品連結 / 分潤連結 / 商品ID+店鋪ID；
     也會用內容猜哪一欄是連結。回傳 {added, dup, failed:[(位置, 原因)]}。"""
     res = {"added": 0, "dup": 0, "failed": []}
@@ -132,7 +132,11 @@ def import_table(conn, rows: list[list[Cell]], label: str = "") -> dict:
         res["failed"].append((label or "檔案", f"找不到商品連結欄。你的檔案欄位是：{heads or '（空白）'}。請確認有「商品連結」（或「商品ID」+「店鋪ID」）欄位"))
         return res
     by_name = {c["name"]: c["id"] for c in db.list_characters(conn)}
-    for n, r in enumerate(rows[hdr_i + 1:], hdr_i + 2):
+    data_rows = rows[hdr_i + 1:]
+    for n, r in enumerate(data_rows, hdr_i + 2):
+        if progress:
+            progress(n - hdr_i - 1, len(data_rows))
+
         def cell(k):
             return r[cols[k]] if k in cols and cols[k] < len(r) else ("", "")
 
@@ -207,12 +211,12 @@ def read_csv(path: str) -> list[list[Cell]]:
     return [[(c, "") for c in row] for row in csv.reader(io.StringIO(text), delimiter=delim)]
 
 
-def import_csv(conn, path: str) -> dict:
+def import_csv(conn, path: str, progress=None) -> dict:
     """匯入 CSV（蝦皮分潤後台下載的檔案）。回傳 {added, dup, failed}。"""
-    return import_table(conn, read_csv(path))
+    return import_table(conn, read_csv(path), progress=progress)
 
 
-def import_excel(conn, path: str) -> dict:
+def import_excel(conn, path: str, progress=None) -> dict:
     """匯入 Excel（.xlsx）。每個工作表各自辨識表頭；支援文字網址與超連結儲存格。"""
     from openpyxl import load_workbook
 
@@ -221,17 +225,17 @@ def import_excel(conn, path: str) -> dict:
     for ws in wb.worksheets:
         rows = [[(c.value if c.value is not None else "", c.hyperlink.target if c.hyperlink and c.hyperlink.target else "")
                  for c in r] for r in ws.iter_rows()]
-        _merge(res, import_table(conn, rows, ws.title if len(wb.worksheets) > 1 else ""))
+        _merge(res, import_table(conn, rows, ws.title if len(wb.worksheets) > 1 else "", progress))
     return res
 
 
-def import_file(conn, path: str) -> dict:
+def import_file(conn, path: str, progress=None) -> dict:
     """依副檔名匯入：.csv / .tsv / .txt → CSV；.xlsx / .xlsm → Excel。"""
     ext = Path(path).suffix.lower()
     if ext in (".xlsx", ".xlsm"):
-        return import_excel(conn, path)
+        return import_excel(conn, path, progress)
     if ext in (".csv", ".tsv", ".txt"):
-        return import_csv(conn, path)
+        return import_csv(conn, path, progress)
     if ext == ".xls":
         return {"added": 0, "dup": 0, "failed": [(Path(path).name, "不支援舊版 .xls，請用 Excel 另存成 .xlsx 或 .csv")]}
     return {"added": 0, "dup": 0, "failed": [(Path(path).name, f"不認得的檔案類型 {ext or '(無副檔名)'}，請用 .csv 或 .xlsx")]}

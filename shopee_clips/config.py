@@ -23,7 +23,7 @@ SPEC = [
     # 圖片
     ("IMAGE_PROVIDER", "", str),           # 空白=未選擇（手動上傳）| gemini | openai | browser | manual
     ("IMAGE_MODEL", "", str),
-    ("DEFAULT_IMAGE_SOURCE", "web", str),  # 新商品預設圖片來源：web=上網找圖當參考(AI 重新生成) | ai=純 AI 生成(不需參考圖)；每個商品可單獨改
+    ("DEFAULT_IMAGE_SOURCE", "auto", str),  # 新商品預設圖片來源：auto=有參考圖就用、沒有就純 AI 生成 | web=一定要參考圖(AI 重新生成) | ai=純 AI 生成；每個商品可單獨改
     ("IMAGES_PER_PRODUCT", 5, int),
     # 影片
     ("VIDEO_MODE", "slideshow", str),      # 預設影片類型：slideshow=5 張圖合成 | ai=用新圖+腳本讓 AI 生成（每個商品可在審圖頁單獨改）
@@ -51,6 +51,8 @@ SPEC = [
     ("CHROME_HEADLESS", False, bool),
     ("FLOW_CLIPS_PER_PRODUCT", 2, int),
     # 流程
+    ("AUTO_RUN", False, bool),            # 自動處理開關（花 API 費用/用 Chrome 的步驟要按「開始」才會跑）
+    ("AUTO_ENRICH", False, bool),         # 背景自動開 Chrome 去蝦皮商品頁補標題/圖片（預設關）
     ("DAILY_GEN_CAP", 10, int),
     ("DAILY_UPLOAD_CAP", 5, int),
     ("UPLOAD_MODE", "manual", str),        # manual=只匯出上架包 | phone_dryrun=手機自動操作但不按發佈 | phone_auto=手機自動發佈

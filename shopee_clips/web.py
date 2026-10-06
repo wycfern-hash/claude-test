@@ -32,48 +32,176 @@ app.mount("/media", StaticFiles(directory=str(config.DATA_DIR)), name="media")
 e = html.escape
 
 CSS = """<meta name=viewport content="width=device-width,initial-scale=1"><style>
-body{font:16px system-ui;margin:0 auto;max-width:720px;padding:12px;background:#fafafa}
-.card{background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px;margin:12px 0}
-img,video{max-width:100%;border-radius:8px}.row{display:flex;gap:8px;flex-wrap:wrap}
-.row>label{flex:1;min-width:140px}button{padding:10px 16px;border-radius:8px;border:0;background:#ee4d2d;color:#fff;font-size:16px}
-button.g{background:#888}input[type=text],textarea{width:100%;box-sizing:border-box;padding:8px;font:inherit}
-nav a{margin-right:12px}.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}</style>"""
-NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/characters">主角</a><a href="/images">審圖</a><a href="/flow">待產片</a><a href="/videos">審片</a><a href="/ready">上架包</a><a href="/list">管理列表</a><a href="/settings">設定</a></nav>'
+body{font:16px/1.5 system-ui;margin:0 auto;max-width:760px;padding:12px;background:#f6f6f6;color:#222}
+h2{margin:8px 0}.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:14px;margin:12px 0}
+img,video{max-width:100%;border-radius:8px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+.row>label{flex:1;min-width:140px}
+button,.btn{display:inline-block;padding:11px 18px;border-radius:10px;border:2px solid #ee4d2d;background:#ee4d2d;color:#fff;font-size:16px;cursor:pointer;text-decoration:none}
+button.g,.btn.g{background:#fff;color:#333;border:2px solid #888}
+button.big,.btn.big{font-size:18px;padding:14px 26px}
+button.ok,.btn.ok{background:#1a9b4b;border-color:#1a9b4b}
+button:hover,.btn:hover{filter:brightness(.93)}
+input[type=text],input[type=password],textarea,select{width:100%;box-sizing:border-box;padding:8px;font:inherit}
+input[type=file]{padding:8px 0;max-width:100%}
+nav{display:flex;flex-wrap:wrap;gap:6px 14px;padding:6px 0 10px;border-bottom:1px solid #ddd}
+nav a{text-decoration:none;color:#333;font-weight:600}nav a:hover{color:#ee4d2d}
+.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}small{color:#666}
+.flash{border-radius:10px;padding:12px 14px;margin:12px 0;font-weight:600}
+.flash.ok{background:#e4f6ea;border:1px solid #1a9b4b}.flash.err{background:#fde8e8;border:1px solid #c00}
+.flash.warn{background:#fff6dc;border:1px solid #d9a400}
+.step{display:flex;gap:12px}.num{flex:none;width:34px;height:34px;border-radius:50%;background:#ee4d2d;color:#fff;
+ display:flex;align-items:center;justify-content:center;font-weight:700}.num.done{background:#1a9b4b}
+.step>.body{flex:1;min-width:0}.todo{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #eee}
+.todo .btn{flex:none;white-space:nowrap}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:6px 4px;border-top:1px solid #eee;text-align:left;vertical-align:top}
+details>summary{cursor:pointer;font-weight:600}
+</style>"""
+NAV = ('<nav><a href="/">開始</a><a href="/todo">待產圖</a><a href="/images">審圖</a><a href="/videos">審片</a>'
+       '<a href="/ready">上架包</a><a href="/list">管理列表</a><a href="/characters">主角</a><a href="/settings">設定</a>'
+       '<a href="/status">檢查</a></nav>')
+
+
+def flashes_html() -> str:
+    return "".join(f'<div class="flash {k}">{e(m)}</div>' for k, m in worker.take_flashes())
 
 
 def page(body: str) -> HTMLResponse:
-    return HTMLResponse(f"<!doctype html><meta charset=utf-8>{CSS}{NAV}{body}")
+    return HTMLResponse(f"<!doctype html><meta charset=utf-8>{CSS}{NAV}{flashes_html()}{body}")
 
 
 def back(path: str = "/"):
     return RedirectResponse(path, status_code=303)
 
 
+STATUS_ZH = {"sourced": "待產圖", "image_review": "待審圖", "image_approved": "待產片", "video_review": "待審片",
+             "video_approved": "待上架", "uploaded": "已上架", "failed": "失敗", "skipped": "略過"}
+NEXT_STEP = {"sourced": ("產圖中／等你處理", "/todo"), "image_review": ("等你審圖", "/images"), "image_approved": ("產影片中", "/flow"),
+             "video_review": ("等你審片", "/videos"), "video_approved": ("等你上架", "/ready"), "uploaded": ("完成", "/list"),
+             "failed": ("失敗，看原因", "/list?status=failed"), "skipped": ("略過", "/list")}
+IMPORT = {"running": False, "name": "", "done": 0, "total": 0, "result": None, "started": 0.0}
+
+
+def _setup_ok() -> tuple[bool, list[str]]:
+    """最低可用設定：腳本、圖片至少各有一個可用的做法（AI 服務或手動）。"""
+    lines = providers.summary()
+    ready = providers.configured("text") and (providers.configured("image") or config.IMAGE_PROVIDER in ("browser", "manual"))
+    return ready, lines
+
+
+def live_html() -> str:
+    """首頁會每幾秒自己更新的區塊：目前在做什麼、各狀態數量、等你處理的事。"""
+    with db.connect() as conn:
+        counts = db.counts(conn)
+        sourced = db.by_status(conn, "sourced")
+    total = sum(counts.values())
+    busy = ""
+    if IMPORT["running"]:
+        busy = f"⏳ 正在匯入選品檔… {IMPORT['done']}/{IMPORT['total'] or '?'}"
+    elif worker.state["step"] and (config.AUTO_RUN or worker.state["step"] in ("產片", "補商品資料")):
+        busy = f"⏳ 背景正在：{worker.state['step']}"
+    if total == 0:
+        return f'<div class="card">{busy or "還沒有商品。請先做步驟 ②「匯入選品檔」。"}</div>'
+    chips = " ".join(f"{STATUS_ZH[k]} <b>{counts[k]}</b>" for k in STATUS_ZH if counts.get(k)) or "—"
+    todo = ""
+    for key, label, url in (("image_review", "個商品等你審圖", "/images"), ("video_review", "支影片等你審片", "/videos"),
+                            ("video_approved", "支影片可以上架", "/ready")):
+        if counts.get(key):
+            todo += (f'<div class=todo><div><b>{counts[key]}</b> {label}</div>'
+                     f'<a class="btn ok" href="{url}">前往處理 →</a></div>')
+    if sourced:
+        if config.AUTO_RUN and providers.configured("image"):
+            todo += f'<div class=todo><div><b>{len(sourced)}</b> 個商品排隊產圖中（每日上限 {config.DAILY_GEN_CAP} 個）</div><a class="btn g" href="/todo">查看</a></div>'
+        else:
+            todo += (f'<div class=todo><div><b>{len(sourced)}</b> 個商品還沒有圖片。按下面步驟 ③「開始」讓 AI 自動產，'
+                     f'或到「待產圖」手動處理</div><a class="btn g" href="/todo">待產圖</a></div>')
+    if counts.get("failed"):
+        todo += f'<div class=todo><div class=err><b>{counts["failed"]}</b> 個失敗</div><a class="btn g" href="/list?status=failed">看原因</a></div>'
+    return f'<div class="card">{f"<div class=flash style=margin-top:0>{e(busy)}</div>" if busy else ""}<b>目前進度</b>（共 {total} 個商品）<br>{chips}{todo}</div>'
+
+
+@app.get("/fragment/live")
+def fragment_live():
+    return HTMLResponse(live_html())
+
+
 @app.get("/")
 def home():
+    ready, lines = _setup_ok()
     with db.connect() as conn:
-        c = db.counts(conn)
+        counts = db.counts(conn)
         failed = db.by_status(conn, "failed")
-    stats = " ｜ ".join(f"{k}: {v}" for k, v in c.items() if v)
-    cfg = " ｜ ".join(providers.summary())
+        recent = db.all_products(conn)[-8:]
+    total = sum(counts.values())
     errs = "".join(f'<div class=err>#{r["id"]} {e(r["title"][:20])}：{e(r["error"])}</div>' for r in failed)
-    return page(f"""<h2>蝦皮分潤短影音</h2><div class=card>{e(stats) or '尚無商品'}</div>
-<div class=card>{e(cfg)}<br><a href="/settings">→ 到設定頁選擇服務並填 API key</a></div>
-<form method=post action=/import-file enctype=multipart/form-data class=card><b>匯入選品檔（蝦皮分潤後台下載的 .csv，或 .xlsx）</b><br>
-自動辨識欄位：商品連結（或分潤連結／商品ID+店鋪ID）必填；商品名稱、價格、圖片連結、賣點1~3 選填<input type=file name=file accept=".csv,.xlsx,.xlsm,.tsv,.txt"><button>匯入</button></form>
-<form method=post action=/apply-defaults class=card><b>批次：套用到所有尚未產圖的商品</b>
-<label>圖片來源<select name=image_source><option value="">不變更</option><option value=web>上網找圖當參考（AI 重新生成）</option><option value=ai>純 AI 生成（找不到圖時用）</option></select></label>
-<label>搭配主角<select name=character_id><option value=keep>不變更</option>{_char_options(-1, "不加人物")}</select></label><button class=g>套用</button></form>
-<form method=post action=/add class=card><b>貼商品連結（一行一個）</b>
-<textarea name=urls rows=4 placeholder="https://shopee.tw/..-i.123.456"></textarea><button>加入</button></form>
-<div class=card><form method=post action=/fetch-picks><button class=g>從分潤後台抓選品</button></form><br>
-<form method=post action=/login><button class=g>開啟自動化 Chrome（首次請在裡面登入 Google 與蝦皮）</button></form>
-<form method=post action=/probe style="margin-top:8px"><button class=g>擷取目前分頁畫面結構（除錯用）</button></form>
-<form method=post action=/phone-check style="margin-top:8px"><button class=g>測試手機連線</button></form>
-<form method=post action=/phone-probe style="margin-top:8px"><button class=g>擷取手機目前畫面（校正上架步驟用）</button></form>
-<form method=post action=/retry-failed style="margin-top:8px"><button class=g>重試失敗項目</button></form>
-</div>
-{errs}<div class=card><b>執行紀錄</b><pre>{e(chr(10).join(worker.log[-15:]))}</pre></div>""")
+    run_btn = ('<form method=post action=/auto-run><input type=hidden name=on value=0><button class="g big">⏸ 暫停自動處理</button></form>'
+               if config.AUTO_RUN else
+               '<form method=post action=/auto-run><input type=hidden name=on value=1><button class="ok big">▶ 開始自動處理</button></form>')
+    run_note = ("自動處理<b>執行中</b>：會依設定自動產圖、產 AI 影片、操作手機上架。" if config.AUTO_RUN else
+                f"按下「開始」後，程式會依你的設定自動產圖、產片（<b>使用 API 費用或點數</b>，每日上限 {config.DAILY_GEN_CAP} 個商品，可在設定調整）。"
+                "不按的話只會做免費的步驟。隨時可以暫停。")
+    rows = "".join(f'<tr><td>{r["id"]}</td><td>{e((r["video_title"] or r["title"] or r["url"])[:26])}</td>'
+                   f'<td><a href="{NEXT_STEP[r["status"]][1]}">{STATUS_ZH[r["status"]]}</a></td></tr>' for r in recent)
+    table = (f'<div class=card><b>最近的商品</b><table>{rows}</table><p><a href="/list">看全部（{total}）→</a></p></div>' if total else "")
+    setup_state = "✅ 已可使用" if ready else "還沒完成"
+    return page(f"""<h2>蝦皮分潤短影音</h2>
+<div class=card><b>怎麼用（照著 ①②③④ 做）</b><br>
+<small>① 設定 AI 服務 → ② 匯入蝦皮分潤的選品檔 → ③ 按「開始」讓程式自動產圖、寫腳本、做影片 → ④ 你只負責「審圖」「審片」和「上架」。</small></div>
+
+<div class=card><div class=step><div class="num {'done' if ready else ''}">①</div><div class=body>
+<b>設定 AI 服務</b> <small>{setup_state}</small>
+<div><small>{'<br>'.join(e(x) for x in lines)}</small></div>
+<p><a class="btn {'g' if ready else ''}" href="/settings">{'檢查設定' if ready else '前往設定（選服務、填 API key）→'}</a></p></div></div></div>
+
+<form method=post action=/import-file enctype=multipart/form-data class=card><div class=step><div class="num {'done' if total else ''}">②</div><div class=body>
+<b>匯入選品檔</b> <small>蝦皮分潤後台下載的 .csv（或 .xlsx）</small><br>
+<input type=file name=file accept=".csv,.xlsx,.xlsm,.tsv,.txt" required>
+<button class=big>匯入</button>
+<p><small>欄位自動辨識，不用改檔案。按「匯入」後會顯示處理進度與結果。</small></p></div></div></form>
+
+<div class=card><div class=step><div class="num {'done' if config.AUTO_RUN else ''}">③</div><div class=body>
+<b>自動處理</b><p><small>{run_note}</small></p>{run_btn}</div></div></div>
+
+<div id=live>{live_html()}</div>
+{table}{errs}
+
+<details class=card><summary>其他：貼連結加入、批次設定、進階工具</summary>
+<form method=post action=/add><p><b>貼商品連結（一行一個）</b></p>
+<textarea name=urls rows=3 placeholder="https://shopee.tw/..-i.123.456"></textarea><p><button class=g>加入</button></p></form>
+<form method=post action=/apply-defaults><p><b>批次：套用到所有尚未產圖的商品</b></p>
+<div class=row><label>圖片來源<select name=image_source><option value="">不變更</option><option value=auto>自動（有參考圖就用，沒有就純 AI）</option><option value=web>上網找圖當參考</option><option value=ai>純 AI 生成</option></select></label>
+<label>搭配主角<select name=character_id><option value=keep>不變更</option>{_char_options(-1, "不加人物")}</select></label><button class=g>套用</button></div></form>
+<hr><p><b>進階工具</b>（一般用不到）</p>
+<form method=post action=/enrich style="margin:6px 0"><button class=g>從蝦皮商品頁補標題/圖片（會開啟 Chrome）</button></form>
+<form method=post action=/fetch-picks style="margin:6px 0"><button class=g>從分潤後台抓選品（會開啟 Chrome）</button></form>
+<form method=post action=/login style="margin:6px 0"><button class=g>開啟自動化 Chrome（登入 Google 用）</button></form>
+<form method=post action=/phone-check style="margin:6px 0"><button class=g>測試手機連線</button></form>
+<form method=post action=/phone-probe style="margin:6px 0"><button class=g>擷取手機目前畫面（校正上架步驟用）</button></form>
+<form method=post action=/probe style="margin:6px 0"><button class=g>擷取目前分頁畫面結構（除錯用）</button></form>
+<form method=post action=/retry-failed style="margin:6px 0"><button class=g>重試失敗項目</button></form>
+</details>
+
+<details class=card><summary>執行紀錄</summary><pre>{e(chr(10).join(worker.log[-25:]))}</pre></details>
+<script>
+setInterval(() => fetch('/fragment/live').then(r => r.text()).then(h => {{ document.getElementById('live').innerHTML = h; }}).catch(() => {{}}), 4000);
+</script>""")
+
+
+@app.post("/auto-run")
+def auto_run(on: str = Form("0")):
+    config.save_env({"AUTO_RUN": "1" if on == "1" else "0"})
+    if on != "1":
+        worker.flash("⏸ 已暫停自動處理。", "ok")
+    elif not providers.configured("image") and config.IMAGE_PROVIDER != "browser":
+        worker.flash("已開始，但「圖片 AI」還沒設定好，所以不會自動產圖。請先完成步驟 ①：到設定頁選圖片服務並填 API key。", "warn")
+    else:
+        worker.flash("▶ 已開始自動處理。程式會在背景依序產圖、產片；有東西要你處理時，首頁會出現綠色按鈕。", "ok")
+    return back()
+
+
+@app.post("/enrich")
+def enrich_now():
+    _bg("補商品資料", sourcing.enrich, "已從蝦皮商品頁補完 {} 個商品的標題與圖片")
+    return back()
 
 
 @app.post("/add")
@@ -81,20 +209,23 @@ def add(urls: str = Form("")):
     with db.connect() as conn:
         try:
             a, d = sourcing.import_urls(conn, urls.splitlines())
-            worker.say(f"新增 {a} 筆，重複略過 {d} 筆")
+            worker.flash(f"✅ 已加入 {a} 個商品" + (f"，重複略過 {d} 個" if d else "") + "。", "ok" if a else "warn")
         except ValueError as ex:
-            worker.say(str(ex))
+            worker.flash(f"❌ {ex}", "err")
     return back()
 
 
-def _bg(name, fn):
+def _bg(name, fn, ok_msg: str = "{}"):
+    """在背景跑一件事（會用到自動化 Chrome），完成/失敗都用醒目訊息告訴你。"""
+    worker.flash(f"⏳ {name}：已開始，完成後會在這裡顯示（可先做別的事）。", "warn")
+
     def run():
         with worker.browser_lock:
             try:
                 with db.connect() as conn:
-                    worker.say(f"{name}：{fn(conn)}")
+                    worker.flash(f"✅ {name}：" + ok_msg.format(fn(conn)), "ok")
             except Exception as ex:  # noqa: BLE001
-                worker.say(f"{name} 失敗：{ex}")
+                worker.flash(f"❌ {name} 失敗：{ex}", "err")
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -102,24 +233,54 @@ def _bg(name, fn):
 @app.post("/import-file")
 @app.post("/import-excel")  # 舊路徑，相容
 def import_file(file: UploadFile = File(...)):
+    if IMPORT["running"]:
+        worker.flash("上一個檔案還在匯入中，請等它做完。", "warn")
+        return back("/import-status")
     inbox = config.DATA_DIR / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     suffix = Path(file.filename or "").suffix.lower() or ".csv"
     path = inbox / (time.strftime("%m%d_%H%M%S_") + "選品" + suffix)
     path.write_bytes(file.file.read())
+    IMPORT.update(running=True, name=file.filename or path.name, done=0, total=0, result=None, started=time.time())
 
-    def run():  # 短連結要逐一展開，100 筆可能要一兩分鐘，放背景做
+    def progress(done, total):
+        IMPORT["done"], IMPORT["total"] = done, total
+
+    def run():  # 分潤短連結要逐一展開，100 筆可能要一兩分鐘，所以放背景並顯示進度
         try:
             with db.connect() as conn:
-                r = sourcing.import_file(conn, str(path))
-            worker.say(f"匯入 {file.filename}：新增 {r['added']}、重複 {r['dup']}、失敗 {len(r['failed'])}")
-            for where, why in r["failed"][:10]:
-                worker.say(f"  ✗ {where}：{why}")
+                IMPORT["result"] = sourcing.import_file(conn, str(path), progress)
         except Exception as ex:  # noqa: BLE001
-            worker.say(f"匯入失敗：{ex}")
+            IMPORT["result"] = {"added": 0, "dup": 0, "failed": [("檔案", f"讀取失敗：{ex}")]}
+        r = IMPORT["result"]
+        worker.say(f"匯入 {IMPORT['name']}：新增 {r['added']}、重複 {r['dup']}、失敗 {len(r['failed'])}")
+        IMPORT["running"] = False
 
     threading.Thread(target=run, daemon=True).start()
-    return back()
+    return back("/import-status")
+
+
+@app.get("/import-status")
+def import_status():
+    if IMPORT["running"]:
+        total = IMPORT["total"] or "?"
+        return HTMLResponse(f"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=2>{CSS}{NAV}"
+                            f"<h2>匯入中…</h2><div class=card>檔案：{e(IMPORT['name'])}<br>進度：<b>{IMPORT['done']} / {total}</b><br>"
+                            f"<small>每筆如果是分潤短連結，需要連到蝦皮展開，可能要一點時間。這頁會自動更新，不要關掉。</small></div>")
+    r = IMPORT["result"]
+    if not r:
+        return back("/")
+    fails = "".join(f"<tr><td>{e(str(w))}</td><td>{e(why)}</td></tr>" for w, why in r["failed"][:30])
+    ok = r["added"] > 0
+    dup_txt = "，重複略過 %d 個" % r["dup"] if r["dup"] else ""
+    head = (f'<div class="flash ok">✅ 匯入完成：新增 <b>{r["added"]}</b> 個商品{dup_txt}。</div>' if ok else
+            '<div class="flash err">❌ 沒有匯入任何商品。看下面的原因。</div>')
+    nxt = ('<p>下一步：</p><p><a class="btn ok big" href="/">回到首頁，按「開始自動處理」→</a></p>'
+           '<p><a class="btn g" href="/list">先看管理列表</a> <a class="btn g" href="/todo">待產圖</a></p>' if ok else
+           '<p><a class="btn big" href="/">回首頁</a></p>')
+    problems = (f'<div class=card><b>有問題的列（{len(r["failed"])}）</b><table><tr><th>位置</th><th>原因</th></tr>{fails}</table></div>'
+                if r["failed"] else "")
+    return page(f"<h2>匯入結果：{e(IMPORT['name'])}</h2>{head}{problems}<div class=card>{nxt}</div>")
 
 
 @app.post("/phone-check")
@@ -128,11 +289,12 @@ def phone_check():
         try:
             d = phone.connect()
             info = d.info
-            worker.say(f"✅ 手機已連線：{info.get('productName') or info.get('brand', '')}，螢幕 {info.get('displayWidth')}×{info.get('displayHeight')}；"
-                       f"目前 App：{d.app_current().get('package')}")
+            worker.flash(f"✅ 手機已連線：{info.get('productName') or info.get('brand', '')}，螢幕 {info.get('displayWidth')}×{info.get('displayHeight')}；"
+                         f"目前 App：{d.app_current().get('package')}", "ok")
         except Exception as ex:  # noqa: BLE001
-            worker.say(f"❌ {ex}")
+            worker.flash(f"❌ {ex}", "err")
 
+    worker.flash("⏳ 正在連線手機…（約幾秒，完成後重新整理本頁）", "warn")
     threading.Thread(target=run, daemon=True).start()
     return back()
 
@@ -141,9 +303,9 @@ def phone_check():
 def phone_probe():
     def run():
         try:
-            worker.say("已存到 " + phone.probe(phone.connect(), "manual") + ".png/.json（把 data/debug 資料夾給我即可）")
+            worker.flash("✅ 已存到 " + phone.probe(phone.connect(), "manual") + ".png/.json（把 data/debug 資料夾給我即可）", "ok")
         except Exception as ex:  # noqa: BLE001
-            worker.say(f"❌ {ex}")
+            worker.flash(f"❌ {ex}", "err")
 
     threading.Thread(target=run, daemon=True).start()
     return back()
@@ -161,13 +323,13 @@ def probe():
 
 @app.post("/fetch-picks")
 def fetch_picks():
-    _bg("抓選品", sourcing.fetch_picks)
+    _bg("抓選品", lambda conn: "新增 %d 個、重複 %d 個" % sourcing.fetch_picks(conn))
     return back()
 
 
 @app.post("/login")
 def login():
-    _bg("登入", lambda conn: sourcing.login())
+    _bg("開啟自動化 Chrome", lambda conn: (sourcing.login(), "已開啟，請在跳出的 Chrome 登入 Google")[1])
     return back()
 
 
@@ -176,9 +338,12 @@ def retry_failed():
     with db.connect() as conn:
         conn.execute("UPDATE products SET error='' WHERE status IN ('sourced','image_approved') "
                      "AND (error LIKE 'imagegen:%' OR error LIKE 'videogen:%' OR error LIKE 'flow:%' OR error LIKE 'enrich:%')")
+        n = 0
         for r in db.by_status(conn, "failed"):
             back_to = "video_approved" if r["video_path"] else ("image_approved" if r["selected_image"] else "sourced")
             db.move(conn, r["id"], back_to, error="")
+            n += 1
+    worker.flash(f"已把 {n} 個失敗的商品放回流程重試；其他卡住的項目也已解除。", "ok")
     return back()
 
 
@@ -189,20 +354,25 @@ def _char_options(sel: int, blank: str = "不加人物") -> str:
     return opts + "".join(f'<option value="{c["id"]}" {"selected" if c["id"] == sel else ""}>{e(c["name"])}</option>' for c in chars)
 
 
+SRC_LABEL = {"auto": "自動（有參考圖就用，沒有就純 AI 生成）", "web": "上網找圖當參考（AI 重新生成）", "ai": "純 AI 生成（不需參考圖）"}
+
+
 def opts_form(r, back: str) -> str:
-    """每個商品：圖片來源（上網找 / AI 生成）與搭配主角。"""
-    src = imagegen.source_for(r)
+    """每個商品：圖片來源與搭配主角。圖片來源留空 = 跟隨設定頁預設。"""
+    cur = r["image_source"]
+    opts = (f'<option value="" {"selected" if not cur else ""}>跟隨預設（{SRC_LABEL.get(config.DEFAULT_IMAGE_SOURCE, "")[:2]}）</option>'
+            + "".join(f'<option value="{k}" {"selected" if k == cur else ""}>{v}</option>' for k, v in SRC_LABEL.items() if k != "auto"))
     return f"""<form method=post action=/products/{r["id"]}/opts class=row>
 <input type=hidden name=back value="{e(back)}">
-<label>圖片來源<select name=image_source><option value=web {"selected" if src == "web" else ""}>上網找圖當參考（AI 重新生成）</option>
-<option value=ai {"selected" if src == "ai" else ""}>純 AI 生成（找不到圖時用）</option></select></label>
+<label>圖片來源<select name=image_source>{opts}</select></label>
 <label>搭配主角<select name=character_id>{_char_options(r["character_id"])}</select></label>
 <button class=g>套用</button></form>"""
 
 
 def mode_box(r) -> str:
     cur = r["video_mode"] or config.VIDEO_MODE
-    ai_note = "（引擎：" + config.VIDEO_PROVIDER + "，會花 API 費用/Flow 點數）"
+    ai_note = ("（引擎：" + config.VIDEO_PROVIDER + "，會花 API 費用/Flow 點數）" if config.VIDEO_PROVIDER
+               else "（尚未選擇 AI 影片服務，請先到設定頁選）")
     return (f'<div>影片類型：<label><input type=radio name=video_mode value=slideshow {"checked" if cur == "slideshow" else ""}> A. 圖片合成 15 秒（免費）</label> '
             f'<label><input type=radio name=video_mode value=ai {"checked" if cur == "ai" else ""}> B. AI 生成影片（新圖+腳本）{e(ai_note)}</label></div>')
 
@@ -252,8 +422,15 @@ def todo():
 <div>上傳 {config.IMAGES_PER_PRODUCT} 張你產好的圖（會依序對應：開場、賣點1~3、結尾）
 <input type=file name=files multiple accept="image/*"></div>
 <button>上傳並送去產片</button> <button name=skip value=1 class=g formnovalidate>不做這個商品</button></form>"""
-    mode = "" if not providers.configured("image") else "<p>已設定 AI 產圖，系統會自動產；這頁只在自動產圖失敗或你想手動補圖時用。</p>"
-    return page(f"<h2>待產圖（{len(rows)}）</h2>{mode}{cards or '沒有待處理商品'}")
+    if providers.configured("image"):
+        mode = (f'<div class="flash {"ok" if config.AUTO_RUN else "warn"}">'
+                + ("✅ 已開始自動處理：AI 會自動幫下面的商品產圖，產好會出現在「審圖」。這頁只在你想手動補圖、換主角或找圖時用。"
+                   if config.AUTO_RUN else "AI 圖片服務已設定好，但還沒開始。請回首頁按「▶ 開始自動處理」，下面的商品就會自動產圖。")
+                + '</div>' + ('' if config.AUTO_RUN else '<p><a class="btn ok" href="/">回首頁開始 →</a></p>'))
+    else:
+        mode = ('<div class="flash warn">還沒設定圖片 AI，所以這些商品不會自動產圖。你可以：'
+                '<a href="/settings">到設定頁選圖片 AI 並填 API key</a>，或在下面每個商品手動上傳圖片。</div>')
+    return page(f"<h2>待產圖（{len(rows)}）</h2>{mode}{cards or '<div class=card>沒有待處理商品。先到首頁匯入選品檔。</div>'}")
 
 
 @app.post("/todo/{pid}")
@@ -391,7 +568,8 @@ ROLE_CARDS = [  # (role, 標題, 服務欄位, 模型欄位, [(值, 名稱)], �
      "不選 = 只能用類型 A 圖片合成"),
 ]
 OTHER_OPTIONS = {
-    "DEFAULT_IMAGE_SOURCE": [("web", "上網找圖當參考（AI 重新生成）"), ("ai", "純 AI 生成（不需參考圖）")],
+    "DEFAULT_IMAGE_SOURCE": [("auto", "自動（有參考圖就用，沒有就純 AI 生成）"), ("web", "上網找圖當參考（AI 重新生成）"), ("ai", "純 AI 生成（不需參考圖）")],
+    "AUTO_ENRICH": [("0", "關（預設）"), ("1", "開（背景自動開 Chrome 去蝦皮商品頁補標題/圖片）")],
     "AI_LABEL": [("1", "開（影片左上角顯示「AI 生成」）"), ("0", "關")],
     "VIDEO_MODE": [("slideshow", "A. 圖片合成 15 秒（免費、不用 API）"), ("ai", "B. AI 生成影片（用新圖+腳本，花錢/點數）")],
     "UPLOAD_MODE": [("manual", "只匯出上架包（我在手機自己傳）"), ("phone_dryrun", "Android 手機自動操作，但不按發佈（先測這個）"),
@@ -400,7 +578,7 @@ OTHER_OPTIONS = {
     "SUBTITLES": [("1", "開（只含賣點內容文字）"), ("0", "關")],
 }
 LABELS = {
-    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型（每個商品可在審圖頁單獨改）", "DEFAULT_IMAGE_SOURCE": "預設圖片來源（每個商品可單獨改）", "AI_LABEL": "「AI 生成」標示",
+    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型（每個商品可在審圖頁單獨改）", "DEFAULT_IMAGE_SOURCE": "預設圖片來源（每個商品可單獨改）", "AUTO_ENRICH": "自動補商品資料", "AI_LABEL": "「AI 生成」標示",
     "VIDEO_CLIP_SECONDS": "AI 影片單段秒數（0=依服務預設）", "FAL_EXTRA_ARGS": "fal 額外參數 JSON（選填）",
     "OPENAI_BASE_URL": "OpenAI Base URL（用相容 OpenAI 的服務才填）", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
     "DAILY_GEN_CAP": "每日最多用 AI 產幾支影片（花錢/點數上限）", "DAILY_UPLOAD_CAP": "每日最多上架幾支", "UPLOAD_MODE": "上架方式",
@@ -482,7 +660,7 @@ def settings(saved: int = 0):
             + _card("Android 手機自動上架（用 USB 偵錯操作蝦皮 App）", ["PHONE_SERIAL", "PHONE_PACKAGE"])
             + _card("雲端上傳（選填，S3 相容）", ["CLOUD_ENDPOINT", "CLOUD_BUCKET", "CLOUD_ACCESS_KEY", "CLOUD_SECRET_KEY", "CLOUD_PUBLIC_BASE"])
             + '<details class=card><summary><b>進階</b></summary>'
-            + "".join(_field(n) for n in ["IMAGES_PER_PRODUCT", "OPENAI_BASE_URL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS", "FLOW_CLIPS_PER_PRODUCT"])
+            + "".join(_field(n) for n in ["AUTO_ENRICH", "IMAGES_PER_PRODUCT", "OPENAI_BASE_URL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS", "FLOW_CLIPS_PER_PRODUCT"])
             + "</details>")
     return page(f"""<h2>設定</h2>{note}<style>label{{display:block;margin:8px 0}}select,input[type=text],input[type=password]{{width:100%;box-sizing:border-box;padding:8px;font:inherit}}</style>
 <form method=post action=/settings>{body}<button>儲存設定</button></form>{_settings_js()}
@@ -519,8 +697,10 @@ async def settings_test(role: str, request: Request):
     await settings_save(request)  # 先存目前表單內容再測
     if role in ("text", "image", "video"):
         def run():
-            worker.say(providers.check(role))
+            msg = providers.check(role)
+            worker.flash(msg, "ok" if msg.startswith(("✅", "ℹ️")) else "err")
 
+        worker.flash("⏳ 測試中…完成後會顯示在這裡（重新整理本頁）", "warn")
         threading.Thread(target=run, daemon=True).start()
     return back("/settings?saved=1")
 
@@ -537,7 +717,8 @@ def _safe_back(path: str) -> str:
 @app.post("/products/{pid}/opts")
 def product_opts(pid: int, image_source: str = Form(""), character_id: int = Form(0), back: str = Form("/")):
     with db.connect() as conn:
-        db.update(conn, pid, image_source=image_source if image_source in ("web", "ai") else "",
+        db.update(conn, pid, image_source=image_source if image_source in ("web", "ai") else "",  # 空白/auto = 跟隨預設
+                  
                   character_id=character_id if db.get_character(conn, character_id) else 0)
     return RedirectResponse(_safe_back(back), status_code=303)
 
@@ -545,6 +726,7 @@ def product_opts(pid: int, image_source: str = Form(""), character_id: int = For
 @app.post("/apply-defaults")
 def apply_defaults(image_source: str = Form(""), character_id: str = Form("keep")):
     """批次：把圖片來源/主角套用到所有『尚未產圖』的商品。"""
+    n = 0
     with db.connect() as conn:
         for r in db.by_status(conn, "sourced"):
             f = {}
@@ -554,6 +736,8 @@ def apply_defaults(image_source: str = Form(""), character_id: str = Form("keep"
                 f["character_id"] = int(character_id) if db.get_character(conn, int(character_id)) else 0
             if f:
                 db.update(conn, r["id"], **f)
+                n += 1
+    worker.flash(f"✅ 已套用到 {n} 個尚未產圖的商品。", "ok" if n else "warn")
     return back()
 
 
@@ -599,9 +783,9 @@ def find_search(pid: int, q: str = Form(""), engine: str = Form("google")):
             try:
                 with browser.open_context() as ctx:
                     n = imgsearch.search(ctx, pid, engine, query)
-                worker.say(f"#{pid} 找圖：{engine} 取得 {n} 張候選")
+                worker.flash(f"✅ #{pid} 找圖完成：{engine} 取得 {n} 張候選圖" if n else f"⚠ #{pid} 沒找到合適的圖，換個關鍵字或搜尋引擎，或改用純 AI 生成", "ok" if n else "warn")
             except Exception as ex:  # noqa: BLE001
-                worker.say(f"#{pid} 找圖失敗：{ex}")
+                worker.flash(f"❌ #{pid} 找圖失敗：{ex}", "err")
             finally:
                 SEARCHING.discard(pid)
 
@@ -720,9 +904,9 @@ def characters_generate(cid: int):
                 c = db.get_character(conn, cid)
                 data = providers.image_bytes(characters.PORTRAIT_PROMPT.format(desc=c["description"]), [])
                 _save_portrait(conn, cid, data)
-            worker.say(f"主角「{c['name']}」形象照已產生")
+            worker.flash(f"✅ 主角「{c['name']}」形象照已產生", "ok")
         except Exception as ex:  # noqa: BLE001
-            worker.say(f"產生形象照失敗：{ex}")
+            worker.flash(f"❌ 產生形象照失敗：{ex}", "err")
 
     threading.Thread(target=run, daemon=True).start()
     return back("/characters?msg=產生中，完成後重新整理本頁（費用依你的圖片服務計）")
@@ -741,10 +925,6 @@ def characters_delete(cid: int):
 
 
 # ------------------------------------------------------------------ 管理列表
-STATUS_ZH = {"sourced": "待產圖", "image_review": "待審圖", "image_approved": "待產片", "video_review": "待審片",
-             "video_approved": "待上架", "uploaded": "已上架", "failed": "失敗", "skipped": "略過"}
-
-
 @app.get("/list")
 def list_page(status: str = ""):
     with db.connect() as conn:
@@ -779,6 +959,48 @@ def list_csv():
                         r["video_title"], r["video_caption"], r["video_path"], r["cloud_url"], r["error"]])
     return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": "attachment; filename=shopee_clips.csv"})
+
+
+# ------------------------------------------------------------------ 檢查（遇到問題時把這頁截圖給我）
+@app.get("/status")
+def status_page():
+    import platform
+    import sys
+
+    from . import slideshow
+
+    def row(ok, label, detail=""):
+        return f"<tr><td>{'✅' if ok else '❌'}</td><td>{e(label)}</td><td><small>{e(detail)}</small></td></tr>"
+
+    rows = [row(True, "Python", f"{sys.version.split()[0]} / {platform.system()} {platform.release()}"),
+            row(bool(shutil.which("ffmpeg")), "ffmpeg（做影片需要）", shutil.which("ffmpeg") or "找不到：命令列執行 winget install ffmpeg")]
+    try:
+        rows.append(row(True, "Google Chrome（找圖/Gemini 網頁/Flow 才需要）", browser.find_chrome()))
+    except Exception as ex:  # noqa: BLE001
+        rows.append(row(False, "Google Chrome（找圖/Gemini 網頁/Flow 才需要）", str(ex)))
+    try:
+        rows.append(row(True, "中文字型（影片字幕）", slideshow.find_font()))
+    except Exception as ex:  # noqa: BLE001
+        rows.append(row(False, "中文字型（影片字幕）", str(ex)))
+    try:
+        import uiautomator2  # noqa: F401
+        rows.append(row(True, "手機自動化套件 uiautomator2", "已安裝（手機是否連線請在首頁「進階工具」測試）"))
+    except Exception as ex:  # noqa: BLE001
+        rows.append(row(False, "手機自動化套件 uiautomator2", str(ex)))
+    for role, name in (("text", "腳本 AI"), ("image", "圖片 AI"), ("video", "AI 影片")):
+        m = providers.missing(role)
+        p = getattr(config, f"{role.upper()}_PROVIDER")
+        rows.append(row(m is None and bool(p), name, f"服務：{p or '未選擇'}" + (f"；{m}" if m else "")))
+    with db.connect() as conn:
+        counts = db.counts(conn)
+    rows.append(row(True, "資料資料夾", str(config.DATA_DIR.resolve())))
+    rows.append(row(config.ENV_PATH.exists(), "設定檔 .env", str(config.ENV_PATH.resolve())))
+    rows.append(row(True, "商品數量", "、".join(f"{STATUS_ZH[k]} {v}" for k, v in counts.items() if v) or "0"))
+    rows.append(row(config.AUTO_RUN, "自動處理", "執行中" if config.AUTO_RUN else "未開始（首頁按「開始」）"))
+    rows.append(row(True, "背景目前", worker.state["step"] or "閒置"))
+    return page(f"""<h2>檢查</h2><p><small>遇到問題時，把這一頁截圖給我，我就能知道是哪裡有問題。</small></p>
+<div class=card><table>{''.join(rows)}</table></div>
+<div class=card><b>最近紀錄</b><pre>{e(chr(10).join(worker.log[-40:]))}</pre></div>""")
 
 
 @app.get("/videos")
