@@ -72,8 +72,8 @@ def _manual_only() -> bool:
 
 
 def run(conn) -> int:
-    """auto：有 key 就自動產圖；失敗（沒額度、模型不開放）不重試，改留在「待產圖」頁讓你手動上傳。"""
-    n = 0
+    """auto：有 key 就自動產圖；失敗（沒額度、模型不開放）不重試，改留在「待產圖」頁讓你手動上傳。
+    browser：操控你的 Chrome 用 Gemini 網頁產圖（見 gemini_web.py）。"""
     for row in db.by_status(conn, "sourced"):
         if json.loads(row["ref_images"]) and not ref_files(row["id"]):
             try:
@@ -81,6 +81,12 @@ def run(conn) -> int:
             except Exception as e:  # noqa: BLE001
                 db.update(conn, row["id"], error=f"refs: {e}")
                 conn.commit()
+    if config.IMAGE_PROVIDER == "browser":
+        from . import gemini_web
+
+        return gemini_web.run(conn, config.DAILY_GEN_CAP - db.images_today(conn))
+    n = 0
+    for row in db.by_status(conn, "sourced"):
         if _manual_only() or row["error"].startswith("imagegen:"):
             continue
         try:

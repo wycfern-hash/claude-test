@@ -22,8 +22,8 @@ def tick() -> None:
     with db.connect() as conn:
         steps = [
             ("補商品資料", lambda: _locked(sourcing.enrich, conn)),
-            ("產圖", lambda: imagegen.run(conn)),
-            ("產片", lambda: videogen.run(conn)),
+            ("產圖", lambda: _locked(imagegen.run, conn)),
+            ("產片", lambda: _locked(videogen.run, conn)),
             ("上架", lambda: _locked(uploader.run, conn)),
         ]
         for name, fn in steps:

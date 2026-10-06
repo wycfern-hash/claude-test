@@ -59,8 +59,14 @@ def build_caption(s: dict) -> str:
 
 
 def run(conn) -> int:
+    if config.VIDEO_PROVIDER == "flow_browser":
+        from . import flow_web
+
+        return flow_web.run(conn, config.DAILY_GEN_CAP - db.generated_today(conn))
     n = 0
     for row in db.by_status(conn, "image_approved"):
+        if row["error"].startswith(("videogen:", "flow:")):
+            continue  # 失敗不自動重試（避免重複花點數/算力）；首頁按「重試失敗項目」
         if config.VIDEO_PROVIDER == "veo" and db.generated_today(conn) >= config.DAILY_GEN_CAP:
             break
         try:

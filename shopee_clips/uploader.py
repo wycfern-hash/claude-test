@@ -85,14 +85,11 @@ def run(conn, mode: str | None = None) -> int:
         return 0
     if not config.SHOPEE_VIDEO_UPLOAD_URL:
         raise RuntimeError("UPLOAD_MODE 需要 SHOPEE_VIDEO_UPLOAD_URL")
-    from playwright.sync_api import sync_playwright
-
-    from .sourcing import _launch
+    from . import browser
 
     labels, n = load_labels(), 0
-    with sync_playwright() as p:
-        ctx = _launch(p, headless=False)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    with browser.open_context() as ctx:
+        page = ctx.new_page()
         for r in rows:
             if mode == "auto" and db.uploaded_today(conn) >= config.DAILY_UPLOAD_CAP:
                 break
@@ -109,5 +106,5 @@ def run(conn, mode: str | None = None) -> int:
             db.move(conn, r["id"], "uploaded", uploaded_at=db.now(), error="")
             conn.commit()
             n += 1
-        ctx.close()
+        page.close()
     return n

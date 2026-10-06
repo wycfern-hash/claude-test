@@ -16,8 +16,19 @@
 | 配音 | 曉臻（`zh-TW-HsiaoChenNeural`，免費 edge-tts） | `TTS=0` 不配音 |
 | 字幕 | 影片上只會有賣點「內容」文字，不會出現 hook/賣點1/CTA 這類標籤 | `SUBTITLES=0` 完全不要字幕 |
 
-### 用 Flow 的點數產片
-Flow 沒有官方 API，程式不能替你操作它。流程：`.env` 設 `VIDEO_PROVIDER=flow` → 審圖核准後「待產片」頁出現起始圖與 2 段英文提示詞 → 你到 Flow 用 Frames to Video（9:16）產 → 把下載的 mp4 傳回該頁 → 程式自動接成 15 秒、轉 1080×1920、換上曉臻配音 → 進審片。
+### 不用 API key：讓程式操控你的 Chrome（實驗性、**尚未在真實 Gemini/Flow 介面驗證**）
+`.env` 設 `IMAGE_PROVIDER=browser`、`VIDEO_PROVIDER=flow_browser`。
+1. 首頁按「開啟自動化 Chrome」，會開一個**獨立資料夾**的 Chrome（`data/browser_profile`），在裡面手動登入 Google 與蝦皮一次。程式不接觸帳密；登入狀態留在這個 Chrome。
+2. 程式透過 CDP 連上它：每張圖開新對話，附賣家參考圖+提示詞，等新圖出現再下載；Flow 則用「起始圖+提示詞」產 2 段、下載，再接成 15 秒換上曉臻配音。
+3. `DAILY_GEN_CAP`（預設每天 10 個商品）限制每日處理量，因為你的 Gemini/Flow 點數與每日額度有限。失敗不會自動重試（避免白燒點數），首頁按「重試失敗項目」。
+4. **按鈕文字是猜的**：失敗時 `data/debug/` 會有截圖與頁面元件清單（`.png` + `.json`）。把整個資料夾給我，我改 `config/browser_sites.json` 的標籤即可。也可以先手動把 Chrome 停在 Gemini/Flow 的某個畫面，按首頁「擷取目前分頁畫面結構」。
+5. 注意：自動操作 Google 網頁介面可能違反其使用條款、帳號有被限制的風險，請自行評估；程式每步之間有間隔，量也有上限。
+
+### 用 Excel 匯入選品
+首頁「匯入 Excel」或 `python -m shopee_clips import-excel 選品.xlsx`。表頭自動辨識：**商品連結**（必填；也認 商品網址/連結/url）、商品名稱、價格、賣點1~3（選填，有填就當指定賣點）。支援文字網址、超連結儲存格、分潤短連結（s.shopee.tw 會自動展開）；同商品自動去重。
+
+### 手動用 Flow（不讓程式操控瀏覽器）
+`VIDEO_PROVIDER=flow`：審圖核准後「待產片」頁給起始圖與提示詞，你到 Flow 產完把 mp4 傳回，程式接成 15 秒並配音。
 
 ### 你的 Gemini key 能不能用？
 首頁按「檢查 Gemini key 能不能用」，會各測一次文字與產圖，結果顯示在執行紀錄。免費 key 通常文字可用；產圖不一定。

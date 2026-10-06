@@ -136,3 +136,8 @@ def generated_today(conn) -> int:
         "SELECT COUNT(*) FROM products WHERE video_path!='' AND status IN ('video_review','video_approved','uploaded') AND updated_at LIKE ?",
         (day + "%",),
     ).fetchone()[0]
+
+
+def images_today(conn) -> int:
+    day = datetime.now(timezone.utc).date().isoformat()
+    return conn.execute("SELECT COUNT(*) FROM products WHERE images!='[]' AND updated_at LIKE ?", (day + "%",)).fetchone()[0]

@@ -173,3 +173,63 @@ def test_all_pages_render():
     c = TestClient(app)
     for path in ("/", "/todo", "/images", "/flow", "/videos", "/ready"):
         assert c.get(path).status_code == 200, path
+
+
+def _make_xlsx(path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["序號", "商品名稱", "商品連結", "價格", "賣點1", "賣點2"])
+    ws.append([1, "保溫杯", "https://shopee.tw/保溫杯-i.11.22", 399, "保溫12小時", "304不鏽鋼"])
+    ws.append([2, "筆", "https://shopee.tw/pen-i.33.44", 20, "", ""])
+    ws.append([3, "重複", "https://shopee.tw/other-i.11.22?x=1", 1, "", ""])          # 同商品 → 去重
+    ws.append([4, "短連結", "https://s.shopee.tw/abc", 1, "", ""])                    # 需展開
+    ws.append([5, "超連結", "點我", 1, "", ""])
+    ws.cell(row=6, column=3).hyperlink = "https://shopee.tw/x-i.55.66"
+    ws.append([6, "壞資料", "https://s.shopee.tw/bad", 1, "", ""])
+    wb.save(path)
+
+
+def test_import_excel(tmp_path, monkeypatch):
+    from shopee_clips import sourcing
+
+    def fake_expand(url):
+        if url.endswith("/abc"):
+            return "https://shopee.tw/product/77/88"
+        raise RuntimeError("redirect failed")
+
+    monkeypatch.setattr(sourcing, "expand_short", fake_expand)
+    x = tmp_path / "選品.xlsx"
+    _make_xlsx(x)
+    with db.connect() as conn:
+        r = sourcing.import_excel(conn, str(x))
+        assert (r["added"], r["dup"], len(r["failed"])) == (4, 1, 1)
+        keys = {row["shopee_key"] for row in conn.execute("SELECT shopee_key FROM products")}
+        assert keys == {"11.22", "33.44", "77.88", "55.66"}
+        cup = conn.execute("SELECT * FROM products WHERE shopee_key='11.22'").fetchone()
+        assert cup["title"] == "保溫杯" and json.loads(cup["script"])["user_points"] == ["保溫12小時", "304不鏽鋼"]
+
+
+def test_excel_without_url_column(tmp_path):
+    from openpyxl import Workbook
+
+    from shopee_clips import sourcing
+
+    wb = Workbook()
+    wb.active.append(["商品名稱", "價格"])
+    wb.save(tmp_path / "a.xlsx")
+    with db.connect() as conn:
+        r = sourcing.import_excel(conn, str(tmp_path / "a.xlsx"))
+    assert r["added"] == 0 and r["failed"]
+
+
+def test_site_labels_are_valid_regex():
+    import re
+
+    from shopee_clips.webauto import site
+
+    for name in ("gemini", "flow"):
+        for k, v in site(name).items():
+            if isinstance(v, str) and not k.startswith(("url", "prompt_prefix")):
+                re.compile(v)

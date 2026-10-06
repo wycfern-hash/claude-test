@@ -6,6 +6,9 @@
 import csv
 import json
 import re
+from urllib.parse import unquote
+
+import httpx
 
 from . import config, db
 
@@ -35,59 +38,113 @@ def import_csv(conn, path: str) -> tuple[int, int]:
     return added, dup
 
 
-def _launch(p, headless: bool):
-    config.ensure_dirs()
-    # 蝦皮有反爬，建議 headed + 持久化 profile（用你自己登入過的瀏覽器狀態）
-    return p.chromium.launch_persistent_context(str(config.BROWSER_PROFILE), headless=headless)
+ALIASES = {
+    "url": ["商品連結", "商品網址", "商品鏈接", "分潤連結", "推廣連結", "連結", "網址", "url", "link", "product link", "product_url"],
+    "title": ["商品名稱", "商品標題", "名稱", "標題", "品名", "title", "name", "product name"],
+    "price": ["價格", "售價", "price"],
+    "p1": ["賣點1", "賣點一", "賣點 1", "selling point 1"],
+    "p2": ["賣點2", "賣點二", "賣點 2", "selling point 2"],
+    "p3": ["賣點3", "賣點三", "賣點 3", "selling point 3"],
+}
+SHORT_HOSTS = ("s.shopee.tw", "shp.ee", "shope.ee", "vn.shp.ee", "s.shopee.com")
+
+
+def expand_short(url: str) -> str:
+    """分潤短連結（s.shopee.tw/xxx）→ 跟著轉址取出含商品 ID 的完整網址。"""
+    r = httpx.get(url, follow_redirects=True, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    return unquote(str(r.url))
+
+
+def _find_cols(header: list) -> dict:
+    cols = {}
+    for i, h in enumerate(header):
+        h = str(h or "").strip().lower()
+        for key, names in ALIASES.items():
+            if key not in cols and h in [n.lower() for n in names]:
+                cols[key] = i
+    return cols
+
+
+def _cell_url(cell) -> str:
+    v = str(cell.value or "").strip()
+    if v.startswith("http"):
+        return v
+    if cell.hyperlink and cell.hyperlink.target:
+        return cell.hyperlink.target
+    return ""
+
+
+def import_excel(conn, path: str) -> dict:
+    """匯入 Excel（.xlsx）。自動辨識表頭（商品連結/商品名稱/價格/賣點1~3 等），商品連結欄必填；
+    支援文字網址、超連結儲存格、分潤短連結。回傳 {added, dup, failed:[(列號, 原因)]}。"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, data_only=True)
+    res = {"added": 0, "dup": 0, "failed": []}
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows())
+        hdr_i = next((i for i, r in enumerate(rows[:10]) if "url" in _find_cols([c.value for c in r])), None)
+        if hdr_i is None:
+            res["failed"].append((ws.title, "找不到「商品連結」欄（表頭請含：商品連結 / 商品網址 / 連結 / url）"))
+            continue
+        cols = _find_cols([c.value for c in rows[hdr_i]])
+        for r in rows[hdr_i + 1:]:
+            url = _cell_url(r[cols["url"]]) if cols["url"] < len(r) else ""
+            if not url:
+                continue
+            get = lambda k: str(r[cols[k]].value or "").strip() if k in cols and cols[k] < len(r) else ""  # noqa: E731
+            try:
+                if db.shopee_key(url) is None and any(h in url for h in SHORT_HOSTS):
+                    url = expand_short(url)
+                pid = db.add_product(conn, url, title=get("title"), price=get("price"))
+            except Exception as e:  # noqa: BLE001
+                res["failed"].append((f"{ws.title} 第{r[0].row}列", str(e)[:120]))
+                continue
+            if pid is None:
+                res["dup"] += 1
+                continue
+            res["added"] += 1
+            pts = [get(k) for k in ("p1", "p2", "p3") if get(k)]
+            if pts:
+                db.update(conn, pid, script=json.dumps({"user_points": pts}, ensure_ascii=False))
+    return res
 
 
 def login() -> None:
-    """開一個有頭瀏覽器讓你『手動』登入蝦皮；之後的 session 存在 data/browser_profile。"""
-    from playwright.sync_api import sync_playwright
+    """開自動化專用 Chrome + Google/Flow/蝦皮分頁；你在裡面手動登入一次即可（帳密不經過程式）。"""
+    from . import browser
 
-    with sync_playwright() as p:
-        ctx = _launch(p, headless=False)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto("https://shopee.tw")
-        # 你在彈出的瀏覽器裡手動登入（分潤後台、短影音後台都登入），登入完把視窗關掉即可
-        while ctx.pages:
-            try:
-                ctx.pages[0].wait_for_event("close", timeout=0)
-            except Exception:  # noqa: BLE001
-                break
-        ctx.close()
+    browser.open_login_tabs()
 
 
 def fetch_picks(conn, limit: int = 30) -> tuple[int, int]:
-    from playwright.sync_api import sync_playwright
+    from . import browser
 
     if not config.AFFILIATE_PICKS_URL:
         raise SystemExit("請先在 .env 設定 AFFILIATE_PICKS_URL")
-    with sync_playwright() as p:
-        ctx = _launch(p, headless=False)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    with browser.open_context() as ctx:
+        page = ctx.new_page()
         page.goto(config.AFFILIATE_PICKS_URL)
         page.wait_for_load_state("networkidle")
         for _ in range(5):  # 觸發懶載入
             page.mouse.wheel(0, 2500)
             page.wait_for_timeout(800)
         hrefs = page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
-        ctx.close()
+        page.close()
     urls = list(dict.fromkeys(h for h in hrefs if PRODUCT_LINK_RE.search(h)))[:limit]
     return import_urls(conn, urls)
 
 
 def enrich(conn) -> int:
     """替只有網址的商品補標題/價格/參考圖（讀商品頁 og meta + JSON-LD）。"""
-    from playwright.sync_api import sync_playwright
+    from . import browser
 
     rows = [r for r in db.by_status(conn, "sourced") if not r["title"] or r["ref_images"] == "[]"]
     if not rows:
         return 0
     n = 0
-    with sync_playwright() as p:
-        ctx = _launch(p, headless=False)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    with browser.open_context() as ctx:
+        page = ctx.new_page()
         for r in rows:
             try:
                 page.goto(r["url"])
@@ -102,7 +159,7 @@ def enrich(conn) -> int:
                 description=info["description"], ref_images=json.dumps(info["images"][:4]), error="",
             )
             n += 1
-        ctx.close()
+        page.close()
     return n
 
 

@@ -2,13 +2,14 @@
 import html
 import json
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, gemini_client, imagegen, scriptgen, sourcing, videogen, worker
+from . import browser, config, db, gemini_client, imagegen, scriptgen, sourcing, videogen, webauto, worker
 
 config.ensure_dirs()
 
@@ -51,10 +52,13 @@ def home():
     stats = " ｜ ".join(f"{k}: {v}" for k, v in c.items() if v)
     errs = "".join(f'<div class=err>#{r["id"]} {e(r["title"][:20])}：{e(r["error"])}</div>' for r in failed)
     return page(f"""<h2>蝦皮分潤短影音</h2><div class=card>{e(stats) or '尚無商品'}</div>
+<form method=post action=/import-excel enctype=multipart/form-data class=card><b>匯入 Excel 選品（.xlsx）</b><br>
+表頭請含「商品連結」，可選：商品名稱、價格、賣點1~3<input type=file name=file accept=".xlsx"><button>匯入</button></form>
 <form method=post action=/add class=card><b>貼商品連結（一行一個）</b>
 <textarea name=urls rows=4 placeholder="https://shopee.tw/..-i.123.456"></textarea><button>加入</button></form>
 <div class=card><form method=post action=/fetch-picks><button class=g>從分潤後台抓選品</button></form><br>
-<form method=post action=/login><button class=g>開瀏覽器登入蝦皮</button></form>
+<form method=post action=/login><button class=g>開啟自動化 Chrome（首次請在裡面登入 Google 與蝦皮）</button></form>
+<form method=post action=/probe style="margin-top:8px"><button class=g>擷取目前分頁畫面結構（除錯用）</button></form>
 <form method=post action=/retry-failed style="margin-top:8px"><button class=g>重試失敗項目</button></form>
 <form method=post action=/check-key style="margin-top:8px"><button class=g>檢查 Gemini key 能不能用</button></form></div>
 {errs}<div class=card><b>執行紀錄</b><pre>{e(chr(10).join(worker.log[-15:]))}</pre></div>""")
@@ -83,6 +87,37 @@ def _bg(name, fn):
     threading.Thread(target=run, daemon=True).start()
 
 
+@app.post("/import-excel")
+def import_excel(file: UploadFile = File(...)):
+    inbox = config.DATA_DIR / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    path = inbox / (time.strftime("%m%d_%H%M%S_") + "選品.xlsx")
+    path.write_bytes(file.file.read())
+
+    def run():  # 短連結要逐一展開，100 筆可能要一兩分鐘，放背景做
+        try:
+            with db.connect() as conn:
+                r = sourcing.import_excel(conn, str(path))
+            worker.say(f"Excel 匯入：新增 {r['added']}、重複 {r['dup']}、失敗 {len(r['failed'])}")
+            for where, why in r["failed"][:10]:
+                worker.say(f"  ✗ {where}：{why}")
+        except Exception as ex:  # noqa: BLE001
+            worker.say(f"Excel 匯入失敗：{ex}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return back()
+
+
+@app.post("/probe")
+def probe():
+    def run(conn):
+        with browser.open_context() as ctx:
+            return "已存到 " + ", ".join(webauto.probe_tabs(ctx)[:3]) + "…（整個 data/debug 資料夾給我即可）"
+
+    _bg("擷取畫面", run)
+    return back()
+
+
 @app.post("/fetch-picks")
 def fetch_picks():
     _bg("抓選品", sourcing.fetch_picks)
@@ -108,7 +143,8 @@ def check_key():
 @app.post("/retry-failed")
 def retry_failed():
     with db.connect() as conn:
-        conn.execute("UPDATE products SET error='' WHERE status='sourced' AND error LIKE 'imagegen:%'")
+        conn.execute("UPDATE products SET error='' WHERE status IN ('sourced','image_approved') "
+                     "AND (error LIKE 'imagegen:%' OR error LIKE 'videogen:%' OR error LIKE 'flow:%')")
         for r in db.by_status(conn, "failed"):
             back_to = "video_approved" if r["video_path"] else ("image_approved" if r["selected_image"] else "sourced")
             db.move(conn, r["id"], back_to, error="")

@@ -23,12 +23,16 @@ IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
 TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-2.5-flash")
 VIDEO_MODEL = os.getenv("VIDEO_MODEL", "veo-3.1-generate-preview")
 IMAGES_PER_PRODUCT = _int("IMAGES_PER_PRODUCT", 5)
-IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "auto")  # auto=有 key 就自動產，失敗改手動上傳 | manual | api
-VIDEO_PROVIDER = os.getenv("VIDEO_PROVIDER", "slideshow")  # slideshow(免費) | flow(你在 Flow 用點數產，上傳回來) | veo(付費)
+IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "auto")  # auto=有 key 就自動產，失敗改手動上傳 | manual | api | browser=操控你的 Chrome 用 Gemini 網頁產圖
+VIDEO_PROVIDER = os.getenv("VIDEO_PROVIDER", "slideshow")  # slideshow(免費) | flow(你自己在 Flow 產、上傳回來) | flow_browser(操控你的 Chrome 在 Flow 產) | veo(付費)
 FONT_PATH = os.getenv("FONT_PATH", "")
 SUBTITLES = os.getenv("SUBTITLES", "1") == "1"  # slideshow 影片是否燒入字幕（只有內容文字，不會有「賣點1」這類標籤）
 TTS = os.getenv("TTS", "1") == "1"  # 免費 edge-tts 配音
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-TW-HsiaoChenNeural")
+CDP_PORT = _int("CDP_PORT", 9222)
+CHROME_PATH = os.getenv("CHROME_PATH", "")
+CHROME_HEADLESS = os.getenv("CHROME_HEADLESS", "0") == "1"  # 僅供測試/無螢幕環境
+FLOW_CLIPS_PER_PRODUCT = _int("FLOW_CLIPS_PER_PRODUCT", 2)
 DAILY_UPLOAD_CAP = _int("DAILY_UPLOAD_CAP", 5)
 DAILY_GEN_CAP = _int("DAILY_GEN_CAP", 10)  # 每日最多產幾支影片（Veo 要錢）
 UPLOAD_MODE = os.getenv("UPLOAD_MODE", "manual")  # manual | dryrun | auto

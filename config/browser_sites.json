@@ -1,0 +1,29 @@
+{
+  "_說明": "Gemini 網頁 / Flow 的按鈕文字（正規表示式，| 代表「或」）。這些是我沒看過畫面時依一般介面猜的預設值，尚未驗證。跑一次失敗後，data/debug 會有截圖與元件清單，據此改這裡的文字即可，不用改程式。",
+  "gemini": {
+    "url": "https://gemini.google.com/app",
+    "upload_menu_button": "上傳|Upload|開啟上傳檔案選單|新增檔案|Add files|Open upload",
+    "upload_files_item": "上傳檔案|Upload files|從電腦上傳",
+    "send_button": "傳送|Send|提交|Submit",
+    "download_button": "下載|Download",
+    "prompt_prefix": "請生成圖片：",
+    "image_min_px": 512,
+    "generate_timeout_sec": 180,
+    "step_timeout_sec": 30,
+    "gap_seconds": 6
+  },
+  "flow": {
+    "url": "https://labs.google/fx/tools/flow",
+    "new_project_button": "新專案|新增專案|New project",
+    "mode_frames_to_video": "影格轉影片|影格|Frames to Video|Frames",
+    "upload_menu_button": "上傳|Upload|新增圖片|新增|Add",
+    "upload_files_item": "上傳圖片|上傳檔案|Upload image|Upload",
+    "aspect_portrait": "9:16|直式|Portrait",
+    "generate_button": "產生|生成|建立|Generate|Create",
+    "download_button": "下載|Download",
+    "download_quality_item": "原始大小|720p|Original size|Original",
+    "generate_timeout_sec": 600,
+    "step_timeout_sec": 30,
+    "gap_seconds": 8
+  }
+}
