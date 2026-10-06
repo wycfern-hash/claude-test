@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS products (
   character_id INTEGER NOT NULL DEFAULT 0,
   image_source TEXT NOT NULL DEFAULT '',   -- web=上網找圖當參考 | ai=純 AI 生成 | 空白=用設定頁預設
   ref_notes TEXT NOT NULL DEFAULT '',      -- 參考圖來源與授權紀錄
+  source_url TEXT NOT NULL DEFAULT '',     -- 匯入時的原始連結（可能是分潤短連結），上架標記商品時用
+  cloud_url TEXT NOT NULL DEFAULT '',      -- 影片上傳雲端後的下載連結
   video_path TEXT NOT NULL DEFAULT '',
   video_title TEXT NOT NULL DEFAULT '',
   video_caption TEXT NOT NULL DEFAULT '',
@@ -84,7 +86,8 @@ BUILTIN_CHARACTERS = [
      "zh-TW-YunJheNeural"),
 ]
 _MIGRATE_COLS = {"products": {"video_mode": "TEXT NOT NULL DEFAULT ''", "character_id": "INTEGER NOT NULL DEFAULT 0",
-                              "image_source": "TEXT NOT NULL DEFAULT ''", "ref_notes": "TEXT NOT NULL DEFAULT ''"}}
+                              "image_source": "TEXT NOT NULL DEFAULT ''", "ref_notes": "TEXT NOT NULL DEFAULT ''",
+                              "source_url": "TEXT NOT NULL DEFAULT ''", "cloud_url": "TEXT NOT NULL DEFAULT ''"}}
 
 _KEY_RES = (
     re.compile(r"-i\.(\d+)\.(\d+)"),
@@ -130,16 +133,17 @@ def connect():
         conn.close()
 
 
-def add_product(conn, url: str, title="", price="", description="", ref_images=None) -> int | None:
+def add_product(conn, url: str, title="", price="", description="", ref_images=None, source_url: str = "") -> int | None:
     """新增商品；已存在（同商品）回傳 None，這就是『一商品一影片』的防線。"""
     key = shopee_key(url)
     if not key:
         raise ValueError(f"無法從網址解析商品 ID（短連結請先在瀏覽器展開）: {url}")
     t = now()
     cur = conn.execute(
-        "INSERT OR IGNORE INTO products (shopee_key,url,title,price,description,ref_images,character_id,created_at,updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?)",
-        (key, url, title, price, description, json.dumps(ref_images or []), config.DEFAULT_CHARACTER_ID, t, t),
+        "INSERT OR IGNORE INTO products (shopee_key,url,title,price,description,ref_images,character_id,source_url,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (key, url, title, price, description, json.dumps(ref_images or []), config.DEFAULT_CHARACTER_ID,
+         source_url if source_url != url else "", t, t),
     )
     return cur.lastrowid if cur.rowcount else None
 
@@ -197,3 +201,9 @@ def list_characters(conn):
 
 def get_character(conn, cid: int):
     return conn.execute("SELECT * FROM characters WHERE id=?", (cid,)).fetchone() if cid else None
+
+
+def all_products(conn, status: str = ""):
+    if status:
+        return conn.execute("SELECT * FROM products WHERE status=? ORDER BY id", (status,)).fetchall()
+    return conn.execute("SELECT * FROM products ORDER BY id").fetchall()

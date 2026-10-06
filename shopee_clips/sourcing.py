@@ -96,9 +96,10 @@ def import_excel(conn, path: str) -> dict:
                 continue
             get = lambda k: str(r[cols[k]].value or "").strip() if k in cols and cols[k] < len(r) else ""  # noqa: E731
             try:
+                original = url
                 if db.shopee_key(url) is None and any(h in url for h in SHORT_HOSTS):
                     url = expand_short(url)
-                pid = db.add_product(conn, url, title=get("title"), price=get("price"))
+                pid = db.add_product(conn, url, title=get("title"), price=get("price"), source_url=original)
             except Exception as e:  # noqa: BLE001
                 res["failed"].append((f"{ws.title} 第{r[0].row}列", str(e)[:120]))
                 continue

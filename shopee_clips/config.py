@@ -13,7 +13,7 @@ REF_DIR = DATA_DIR / "ref"  # 賣家原圖：只當 AI 參考輸入，絕不上�
 IMG_DIR = DATA_DIR / "images"
 VID_DIR = DATA_DIR / "videos"
 BROWSER_PROFILE = DATA_DIR / "browser_profile"  # 自動化專用 Chrome 的資料夾（登入狀態在這，不存帳密）
-SELECTORS_PATH = Path("config/shopee_upload.json")
+PHONE_STEPS_PATH = Path("config/shopee_app_steps.json")
 
 # (名稱, 預設值, 型別)。網頁設定頁與 reload() 共用這份清單。
 SPEC = [
@@ -53,14 +53,22 @@ SPEC = [
     # 流程
     ("DAILY_GEN_CAP", 10, int),
     ("DAILY_UPLOAD_CAP", 5, int),
-    ("UPLOAD_MODE", "manual", str),        # manual | dryrun | auto
+    ("UPLOAD_MODE", "manual", str),        # manual=只匯出上架包 | phone_dryrun=手機自動操作但不按發佈 | phone_auto=手機自動發佈
     ("POLL_SECONDS", 60, int),
     ("PORT", 8000, int),
     ("APP_PASSWORD", "", str),             # 設了之後網頁要帳密(任意帳號名)才能進，手機/區網使用建議設
     ("AFFILIATE_PICKS_URL", "", str),
-    ("SHOPEE_VIDEO_UPLOAD_URL", "", str),
+    # Android 手機自動上架（蝦皮短影音只有手機版）
+    ("PHONE_SERIAL", "", str),             # 接了多支手機時指定序號；空白=唯一那支
+    ("PHONE_PACKAGE", "com.shopee.tw", str),
+    # 雲端（S3 相容：AWS S3 / Cloudflare R2 / Backblaze B2 / MinIO）：影片上傳後產生下載連結，手機任何網路都能下載
+    ("CLOUD_ENDPOINT", "", str),
+    ("CLOUD_BUCKET", "", str),
+    ("CLOUD_ACCESS_KEY", "", str),
+    ("CLOUD_SECRET_KEY", "", str),
+    ("CLOUD_PUBLIC_BASE", "", str),        # bucket 已公開時填網址前綴；空白=用 7 天有效的預簽名連結
 ]
-SECRETS = {"GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FAL_KEY", "APP_PASSWORD"}
+SECRETS = {"GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FAL_KEY", "APP_PASSWORD", "CLOUD_ACCESS_KEY", "CLOUD_SECRET_KEY"}
 
 # 設定頁「模型」欄的下拉建議（只是建議，沒有預設值；也可自己輸入任何模型名稱）
 MODEL_SUGGESTIONS = {
@@ -98,6 +106,9 @@ def reload() -> None:
         raw_v = os.getenv(name)
         RAW[name] = str(default) if raw_v is None else raw_v
         g[name] = default if raw_v is None else _cast(raw_v, typ)
+    # 蝦皮短影音沒有網頁版：舊的 dryrun/auto（網頁上架）改對應到手機版
+    g["UPLOAD_MODE"] = {"dryrun": "phone_dryrun", "auto": "phone_auto"}.get(g["UPLOAD_MODE"], g["UPLOAD_MODE"])
+    RAW["UPLOAD_MODE"] = g["UPLOAD_MODE"]
     # 舊版值正規化：不再有 auto；VIDEO_PROVIDER=slideshow 代表「類型 A 圖片合成」
     for k in ("TEXT_PROVIDER", "IMAGE_PROVIDER", "VIDEO_PROVIDER"):
         if g[k] in ("auto", "api", "template", "slideshow"):

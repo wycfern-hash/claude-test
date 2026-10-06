@@ -1,0 +1,25 @@
+{
+  "_說明": "蝦皮短影音只有手機版，所以用電腦透過 USB 偵錯操作你手機上的蝦皮 App。下面每一步用『畫面上的文字』找按鈕（正規表示式，| 代表「或」），這份是我沒看過你的 App 畫面、依一般介面猜的預設值，尚未驗證。校正方法：1) 首頁按「測試手機連線」；2) 手動把手機操作到某個畫面，按首頁「擷取手機目前畫面」，把 data/debug 的 png 與 json 給我（或自己對照 json 改這份檔案）。可用變數：{caption}（標題+文案）{title} {product_title} {product_link}（匯入時的原始/分潤連結）{product_url}。每步可加 optional:true（找不到就略過）、timeout（秒）、instance（第幾個符合的）。publish:true 的步驟在 phone_dryrun 模式不會執行（停在發佈前讓你檢查）。",
+  "package": "com.shopee.tw",
+  "gap_seconds": [1.0, 2.5],
+  "between_videos_seconds": [30, 90],
+  "default_timeout": 15,
+  "delete_after_success": true,
+  "steps": [
+    {"name": "開啟蝦皮", "launch": true, "sleep": 4},
+    {"name": "進入影片分頁", "tap": {"text": "影片|影音|Video"}, "optional": true},
+    {"name": "點新增影片", "tap": {"desc": "新增|建立|發佈|Create|拍攝|\\+"}},
+    {"name": "選擇從相簿上傳", "tap": {"text": "相簿|相冊|從相簿|上傳|Gallery|Upload"}, "optional": true},
+    {"name": "選最新那支影片", "tap_ratio": [0.17, 0.22]},
+    {"name": "下一步", "tap": {"text": "下一步|Next|繼續|完成"}},
+    {"name": "下一步（編輯頁）", "tap": {"text": "下一步|Next|繼續|完成"}, "optional": true},
+    {"name": "填入文案", "type": {"into": {"text": "說明|描述|說點什麼|寫點什麼|Caption|Describe"}, "text": "{caption}"}},
+    {"name": "標記商品", "tap": {"text": "標記商品|新增商品|連結商品|商品連結|Tag product"}},
+    {"name": "搜尋或貼上商品連結", "type": {"into": {"text": "搜尋|連結|貼上|Search|Paste"}, "text": "{product_link}"}},
+    {"name": "送出搜尋", "tap": {"text": "搜尋|確認|Search"}, "optional": true, "sleep": 3},
+    {"name": "選擇第一個商品", "tap": {"text": "選擇|新增|加入|確認|Select|Add"}},
+    {"name": "完成商品標記", "tap": {"text": "完成|確認|Done|Confirm"}, "optional": true},
+    {"name": "按發佈", "tap": {"text": "發佈|發布|分享|Post|Publish"}, "publish": true},
+    {"name": "確認發佈成功", "wait": {"text": "成功|已發佈|已發布|審核中|Success"}, "timeout": 60, "publish": true}
+  ]
+}

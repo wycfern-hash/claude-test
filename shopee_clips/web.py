@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import browser, characters, config, db, imagegen, imgsearch, providers, scriptgen, sourcing, videogen, webauto, worker
+from . import browser, characters, cloud, config, db, imagegen, imgsearch, phone, providers, scriptgen, sourcing, videogen, webauto, worker
 
 config.ensure_dirs()
 
@@ -37,7 +37,7 @@ img,video{max-width:100%;border-radius:8px}.row{display:flex;gap:8px;flex-wrap:w
 .row>label{flex:1;min-width:140px}button{padding:10px 16px;border-radius:8px;border:0;background:#ee4d2d;color:#fff;font-size:16px}
 button.g{background:#888}input[type=text],textarea{width:100%;box-sizing:border-box;padding:8px;font:inherit}
 nav a{margin-right:12px}.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}</style>"""
-NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/characters">主角</a><a href="/images">審圖</a><a href="/flow">待產片</a><a href="/videos">審片</a><a href="/ready">上架包</a><a href="/settings">設定</a></nav>'
+NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/characters">主角</a><a href="/images">審圖</a><a href="/flow">待產片</a><a href="/videos">審片</a><a href="/ready">上架包</a><a href="/list">管理列表</a><a href="/settings">設定</a></nav>'
 
 
 def page(body: str) -> HTMLResponse:
@@ -68,6 +68,8 @@ def home():
 <div class=card><form method=post action=/fetch-picks><button class=g>從分潤後台抓選品</button></form><br>
 <form method=post action=/login><button class=g>開啟自動化 Chrome（首次請在裡面登入 Google 與蝦皮）</button></form>
 <form method=post action=/probe style="margin-top:8px"><button class=g>擷取目前分頁畫面結構（除錯用）</button></form>
+<form method=post action=/phone-check style="margin-top:8px"><button class=g>測試手機連線</button></form>
+<form method=post action=/phone-probe style="margin-top:8px"><button class=g>擷取手機目前畫面（校正上架步驟用）</button></form>
 <form method=post action=/retry-failed style="margin-top:8px"><button class=g>重試失敗項目</button></form>
 </div>
 {errs}<div class=card><b>執行紀錄</b><pre>{e(chr(10).join(worker.log[-15:]))}</pre></div>""")
@@ -112,6 +114,33 @@ def import_excel(file: UploadFile = File(...)):
                 worker.say(f"  ✗ {where}：{why}")
         except Exception as ex:  # noqa: BLE001
             worker.say(f"Excel 匯入失敗：{ex}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return back()
+
+
+@app.post("/phone-check")
+def phone_check():
+    def run():
+        try:
+            d = phone.connect()
+            info = d.info
+            worker.say(f"✅ 手機已連線：{info.get('productName') or info.get('brand', '')}，螢幕 {info.get('displayWidth')}×{info.get('displayHeight')}；"
+                       f"目前 App：{d.app_current().get('package')}")
+        except Exception as ex:  # noqa: BLE001
+            worker.say(f"❌ {ex}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return back()
+
+
+@app.post("/phone-probe")
+def phone_probe():
+    def run():
+        try:
+            worker.say("已存到 " + phone.probe(phone.connect(), "manual") + ".png/.json（把 data/debug 資料夾給我即可）")
+        except Exception as ex:  # noqa: BLE001
+            worker.say(f"❌ {ex}")
 
     threading.Thread(target=run, daemon=True).start()
     return back()
@@ -362,7 +391,8 @@ OTHER_OPTIONS = {
     "DEFAULT_IMAGE_SOURCE": [("web", "上網找圖當參考（AI 重新生成）"), ("ai", "純 AI 生成（不需參考圖）")],
     "AI_LABEL": [("1", "開（影片左上角顯示「AI 生成」）"), ("0", "關")],
     "VIDEO_MODE": [("slideshow", "A. 圖片合成 15 秒（免費、不用 API）"), ("ai", "B. AI 生成影片（用新圖+腳本，花錢/點數）")],
-    "UPLOAD_MODE": [("manual", "只匯出上架包（手機/電腦自己傳）"), ("dryrun", "自動填好但不發佈（先測這個）"), ("auto", "自動發佈")],
+    "UPLOAD_MODE": [("manual", "只匯出上架包（我在手機自己傳）"), ("phone_dryrun", "Android 手機自動操作，但不按發佈（先測這個）"),
+                    ("phone_auto", "Android 手機自動操作並發佈")],
     "TTS": [("1", "開（曉臻）"), ("0", "關")],
     "SUBTITLES": [("1", "開（只含賣點內容文字）"), ("0", "關")],
 }
@@ -371,7 +401,10 @@ LABELS = {
     "VIDEO_CLIP_SECONDS": "AI 影片單段秒數（0=依服務預設）", "FAL_EXTRA_ARGS": "fal 額外參數 JSON（選填）",
     "OPENAI_BASE_URL": "OpenAI Base URL（用相容 OpenAI 的服務才填）", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
     "DAILY_GEN_CAP": "每日最多用 AI 產幾支影片（花錢/點數上限）", "DAILY_UPLOAD_CAP": "每日最多上架幾支", "UPLOAD_MODE": "上架方式",
-    "SHOPEE_VIDEO_UPLOAD_URL": "蝦皮短影音網頁上傳頁網址", "AFFILIATE_PICKS_URL": "分潤後台選品頁網址（選填）",
+    "PHONE_SERIAL": "手機序號（接多支手機才需要）", "PHONE_PACKAGE": "蝦皮 App 套件名稱",
+    "CLOUD_ENDPOINT": "Endpoint（R2/B2/MinIO 才填；AWS S3 留空）", "CLOUD_BUCKET": "Bucket 名稱", "CLOUD_ACCESS_KEY": "Access key",
+    "CLOUD_SECRET_KEY": "Secret key", "CLOUD_PUBLIC_BASE": "公開網址前綴（bucket 已公開才填；留空=7 天預簽名連結）",
+    "AFFILIATE_PICKS_URL": "分潤後台選品頁網址（選填）",
     "APP_PASSWORD": "網頁密碼（選填；手機/區網使用建議設）", "FLOW_CLIPS_PER_PRODUCT": "Flow 每商品幾段",
 }
 SPEC_TYPES = {n: t for n, _, t in config.SPEC}
@@ -442,7 +475,9 @@ def settings(saved: int = 0):
     cards = "".join(_role_card(*c) for c in ROLE_CARDS)
     body = (f'<div class=card><b>目前狀態</b><ul>{status}</ul><small>每一項都由你選擇服務並填入那一家的 key；沒有任何預設的服務或模型。</small></div>'
             + cards + _card("預設值", ["DEFAULT_IMAGE_SOURCE", "VIDEO_MODE"]) + _card("配音、字幕與標示", ["TTS", "TTS_VOICE", "SUBTITLES", "AI_LABEL"])
-            + _card("流程與上架", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "SHOPEE_VIDEO_UPLOAD_URL", "AFFILIATE_PICKS_URL", "APP_PASSWORD"])
+            + _card("流程與上架（蝦皮短影音只有手機版）", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "AFFILIATE_PICKS_URL", "APP_PASSWORD"])
+            + _card("Android 手機自動上架（用 USB 偵錯操作蝦皮 App）", ["PHONE_SERIAL", "PHONE_PACKAGE"])
+            + _card("雲端上傳（選填，S3 相容）", ["CLOUD_ENDPOINT", "CLOUD_BUCKET", "CLOUD_ACCESS_KEY", "CLOUD_SECRET_KEY", "CLOUD_PUBLIC_BASE"])
             + '<details class=card><summary><b>進階</b></summary>'
             + "".join(_field(n) for n in ["IMAGES_PER_PRODUCT", "OPENAI_BASE_URL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS", "FLOW_CLIPS_PER_PRODUCT"])
             + "</details>")
@@ -702,6 +737,47 @@ def characters_delete(cid: int):
     return back("/characters")
 
 
+# ------------------------------------------------------------------ 管理列表
+STATUS_ZH = {"sourced": "待產圖", "image_review": "待審圖", "image_approved": "待產片", "video_review": "待審片",
+             "video_approved": "待上架", "uploaded": "已上架", "failed": "失敗", "skipped": "略過"}
+
+
+@app.get("/list")
+def list_page(status: str = ""):
+    with db.connect() as conn:
+        counts = db.counts(conn)
+        rows = db.all_products(conn, status if status in STATUS_ZH else "")
+    tabs = f'<a href="/list">全部（{sum(counts.values())}）</a> ' + " ".join(
+        f'<a href="/list?status={k}">{v}（{counts.get(k, 0)}）</a>' for k, v in STATUS_ZH.items())
+    body = ""
+    for r in rows:
+        video = f'<a href="/media/{e(r["video_path"])}" target=_blank>影片</a> ' if r["video_path"] else ""
+        cl = f'<a href="{e(r["cloud_url"])}" target=_blank>☁</a> ' if r["cloud_url"] else ""
+        extra = f'<div class=err>{e(r["error"])}</div>' if r["error"] else ""
+        body += (f'<tr><td>{r["id"]}</td><td>{e((r["video_title"] or r["title"])[:28])}{extra}</td>'
+                 f'<td>{STATUS_ZH.get(r["status"], r["status"])}</td>'
+                 f'<td>{video}{cl}<a href="{e(r["source_url"] or r["url"])}" target=_blank>商品</a></td></tr>')
+    return page(f"""<h2>管理列表</h2><p>{tabs}</p><p><a href="/list.csv"><button type=button class=g>匯出 CSV</button></a></p>
+<table style="width:100%;border-collapse:collapse;font-size:14px"><tr><th>#</th><th>標題</th><th>狀態</th><th>連結</th></tr>{body}</table>
+{'' if rows else '沒有項目'}""")
+
+
+@app.get("/list.csv")
+def list_csv():
+    import csv
+    import io
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["id", "狀態", "商品名稱", "商品連結", "原始連結", "影片標題", "影片文案", "影片檔", "雲端連結", "錯誤"])
+    with db.connect() as conn:
+        for r in db.all_products(conn):
+            w.writerow([r["id"], STATUS_ZH.get(r["status"], r["status"]), r["title"], r["url"], r["source_url"],
+                        r["video_title"], r["video_caption"], r["video_path"], r["cloud_url"], r["error"]])
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=shopee_clips.csv"})
+
+
 @app.get("/videos")
 def videos():
     with db.connect() as conn:
@@ -729,6 +805,14 @@ def videos_act(pid: int, act: str = Form(...), video_title: str = Form(""), vide
     return back("/videos")
 
 
+def cloud_html(r) -> str:
+    """雲端下載連結 + QR（手機掃一下就能下載影片，不必在同一個 Wi-Fi）。"""
+    if not r["cloud_url"]:
+        return ""
+    return (f'<div><a href="{e(r["cloud_url"])}" target=_blank>☁ 雲端下載連結</a>'
+            f'<div style="width:140px;margin-top:6px">{cloud.qr_svg(r["cloud_url"])}</div></div>')
+
+
 @app.get("/ready")
 def ready():
     """手機上架：下載影片、複製標題文案、開商品連結，貼到蝦皮 App。"""
@@ -742,7 +826,8 @@ def ready():
 <a href="/media/{e(r["video_path"])}" download>下載影片</a>
 <textarea id=t{r["id"]} rows=4 readonly>{text}</textarea>
 <button type=button onclick="navigator.clipboard.writeText(document.getElementById('t{r["id"]}').value)">複製標題+文案</button>
-<a href="{e(r["url"])}" target=_blank>商品連結</a>
+<a href="{e(r["source_url"] or r["url"])}" target=_blank>商品連結</a>
+{cloud_html(r)}
 <form method=post action=/ready/{r["id"]}><button class=g>我已手動上傳</button></form></div>"""
     return page(f"<h2>上架包（{len(rows)}）</h2>{cards or '沒有待上架'}")
 

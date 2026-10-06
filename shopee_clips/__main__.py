@@ -2,6 +2,8 @@
 python -m shopee_clips import-excel 選品.xlsx
 python -m shopee_clips check-key     測 Gemini key
 python -m shopee_clips probe         擷取自動化 Chrome 目前所有分頁的畫面結構到 data/debug
+python -m shopee_clips check-phone   測試 Android 手機連線
+python -m shopee_clips probe-phone   擷取手機目前畫面（截圖+按鈕清單）到 data/debug
 """
 import argparse
 import socket
@@ -25,6 +27,8 @@ def main() -> None:
     x.add_argument("path")
     sub.add_parser("check-key")
     sub.add_parser("probe")
+    sub.add_parser("probe-phone")
+    sub.add_parser("check-phone")
     args = ap.parse_args()
 
     if args.cmd == "import-excel":
@@ -44,6 +48,11 @@ def main() -> None:
 
         with browser.open_context() as ctx:
             print("\n".join(webauto.probe_tabs(ctx)))
+    elif args.cmd in ("probe-phone", "check-phone"):
+        from . import phone
+
+        d = phone.connect()
+        print(d.info if args.cmd == "check-phone" else phone.probe(d, "cli"))
     else:
         import uvicorn
 
