@@ -5,11 +5,14 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, UploadFile
+import base64
+import secrets
+
+from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import browser, config, db, gemini_client, imagegen, scriptgen, sourcing, videogen, webauto, worker
+from . import browser, config, db, imagegen, providers, scriptgen, sourcing, videogen, webauto, worker
 
 config.ensure_dirs()
 
@@ -33,7 +36,7 @@ img,video{max-width:100%;border-radius:8px}.row{display:flex;gap:8px;flex-wrap:w
 .row>label{flex:1;min-width:140px}button{padding:10px 16px;border-radius:8px;border:0;background:#ee4d2d;color:#fff;font-size:16px}
 button.g{background:#888}input[type=text],textarea{width:100%;box-sizing:border-box;padding:8px;font:inherit}
 nav a{margin-right:12px}.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}</style>"""
-NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/images">審圖</a><a href="/flow">待產片</a><a href="/videos">審片</a><a href="/ready">上架包</a></nav>'
+NAV = '<nav><a href="/">總覽</a><a href="/todo">待產圖</a><a href="/images">審圖</a><a href="/flow">待產片</a><a href="/videos">審片</a><a href="/ready">上架包</a><a href="/settings">設定</a></nav>'
 
 
 def page(body: str) -> HTMLResponse:
@@ -50,8 +53,14 @@ def home():
         c = db.counts(conn)
         failed = db.by_status(conn, "failed")
     stats = " ｜ ".join(f"{k}: {v}" for k, v in c.items() if v)
+    def mark(role, label):
+        pv = getattr(config, f"{role.upper()}_PROVIDER")
+        ok = pv in ("slideshow", "manual", "browser", "flow", "flow_browser", "template") or providers.configured(role)
+        return f"{label}: {pv} {'✅' if ok else '❌ 尚未填 API key'}"
+    cfg = " ｜ ".join([mark("text", "腳本"), mark("image", "圖片"), mark("video", "影片")])
     errs = "".join(f'<div class=err>#{r["id"]} {e(r["title"][:20])}：{e(r["error"])}</div>' for r in failed)
     return page(f"""<h2>蝦皮分潤短影音</h2><div class=card>{e(stats) or '尚無商品'}</div>
+<div class=card>{e(cfg)} <a href="/settings">→ 設定 API key / 供應商</a></div>
 <form method=post action=/import-excel enctype=multipart/form-data class=card><b>匯入 Excel 選品（.xlsx）</b><br>
 表頭請含「商品連結」，可選：商品名稱、價格、賣點1~3<input type=file name=file accept=".xlsx"><button>匯入</button></form>
 <form method=post action=/add class=card><b>貼商品連結（一行一個）</b>
@@ -60,7 +69,7 @@ def home():
 <form method=post action=/login><button class=g>開啟自動化 Chrome（首次請在裡面登入 Google 與蝦皮）</button></form>
 <form method=post action=/probe style="margin-top:8px"><button class=g>擷取目前分頁畫面結構（除錯用）</button></form>
 <form method=post action=/retry-failed style="margin-top:8px"><button class=g>重試失敗項目</button></form>
-<form method=post action=/check-key style="margin-top:8px"><button class=g>檢查 Gemini key 能不能用</button></form></div>
+</div>
 {errs}<div class=card><b>執行紀錄</b><pre>{e(chr(10).join(worker.log[-15:]))}</pre></div>""")
 
 
@@ -127,16 +136,6 @@ def fetch_picks():
 @app.post("/login")
 def login():
     _bg("登入", lambda conn: sourcing.login())
-    return back()
-
-
-@app.post("/check-key")
-def check_key():
-    def run():
-        for line in gemini_client.check():
-            worker.say(line)
-
-    threading.Thread(target=run, daemon=True).start()
     return back()
 
 
@@ -253,9 +252,9 @@ def flow():
     for r in rows:
         sc = json.loads(r["script"])
         prompts = "".join(
-            f'<textarea id=v{r["id"]}_{i} rows=3 readonly>{e(sc.get(k, ""))}</textarea>'
+            f'<textarea id=v{r["id"]}_{i} rows=3 readonly>{e(p)}</textarea>'
             f'<button type=button class=g onclick="navigator.clipboard.writeText(document.getElementById(\'v{r["id"]}_{i}\').value)">複製片段 {i} 提示詞</button>'
-            for i, k in ((1, "video_prompt_1"), (2, "video_prompt_2")))
+            for i, p in enumerate(scriptgen.video_prompts(sc, scriptgen.clips_needed()), 1))
         cards += f"""<form method=post enctype=multipart/form-data class=card action=/flow/{r["id"]}>
 <b>#{r["id"]} {e(r["title"])}</b>
 <div>起始圖（Flow 用 Frames to Video，比例選 9:16）：<a href="/media/{e(r["selected_image"])}" download><img src="/media/{e(r["selected_image"])}" width=120></a></div>
@@ -284,6 +283,118 @@ def flow_upload(pid: int, files: list[UploadFile] = File([])):
                 db.update(conn, pid, error=f"flow: {ex}")
                 worker.say(f"#{pid} 合成失敗：{ex}")
     return back("/flow")
+
+
+# ------------------------------------------------------------------ 設定頁 + 簡易密碼
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    if config.APP_PASSWORD:
+        ok = False
+        h = request.headers.get("authorization", "")
+        if h.startswith("Basic "):
+            try:
+                pw = base64.b64decode(h[6:]).decode().split(":", 1)[1]
+                ok = secrets.compare_digest(pw, config.APP_PASSWORD)
+            except Exception:  # noqa: BLE001
+                ok = False
+        if not ok:
+            return Response("需要密碼", status_code=401, headers={"WWW-Authenticate": 'Basic realm="shopee_clips"'})
+    return await call_next(request)
+
+
+PROVIDER_OPTIONS = {
+    "TEXT_PROVIDER": [("gemini", "Gemini（有免費額度）"), ("openai", "OpenAI / 相容服務"), ("claude", "Claude"),
+                      ("template", "不用 AI（範本 + 我填的賣點）")],
+    "IMAGE_PROVIDER": [("gemini", "Gemini 產圖（API）"), ("openai", "OpenAI 產圖（API）"),
+                       ("browser", "操控我的 Chrome 用 Gemini 網頁（免 API）"), ("manual", "手動上傳（免 API）")],
+    "VIDEO_PROVIDER": [("slideshow", "用圖合成 15 秒（免費、不用 API）"), ("veo", "Veo（Gemini API，付費）"),
+                       ("fal", "fal.ai 圖生影片（Kling 等，付費）"), ("flow_browser", "操控我的 Chrome 用 Flow 點數（免 API）"),
+                       ("flow", "手動：我自己在 Flow 產、上傳 mp4")],
+    "UPLOAD_MODE": [("manual", "只匯出上架包（手機/電腦自己傳）"), ("dryrun", "自動填好但不發佈（先測這個）"),
+                    ("auto", "自動發佈")],
+    "TTS": [("1", "開（曉臻）"), ("0", "關")],
+    "SUBTITLES": [("1", "開（只含賣點內容文字）"), ("0", "關")],
+}
+SETTING_GROUPS = [
+    ("腳本文案（標題、賣點、配音稿、貼文文案）", ["TEXT_PROVIDER", "TEXT_MODEL"], "text"),
+    ("圖片（用賣家圖當參考，重新生成全新商品圖）", ["IMAGE_PROVIDER", "IMAGE_MODEL", "IMAGES_PER_PRODUCT"], "image"),
+    ("影片", ["VIDEO_PROVIDER", "VIDEO_MODEL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS"], "video"),
+    ("API 金鑰（留空 = 不變更；金鑰只存在你電腦的 .env）", ["GEMINI_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "FAL_KEY"], None),
+    ("配音與字幕", ["TTS", "TTS_VOICE", "SUBTITLES"], None),
+    ("流程與上架", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "SHOPEE_VIDEO_UPLOAD_URL", "AFFILIATE_PICKS_URL", "APP_PASSWORD"], None),
+]
+LABELS = {
+    "TEXT_PROVIDER": "供應商", "TEXT_MODEL": "模型（空白=預設）", "IMAGE_PROVIDER": "供應商", "IMAGE_MODEL": "模型（空白=預設）",
+    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_PROVIDER": "供應商", "VIDEO_MODEL": "模型（空白=預設）",
+    "VIDEO_CLIP_SECONDS": "單段秒數（0=預設）", "FAL_EXTRA_ARGS": "fal 額外參數 JSON（選填）",
+    "GEMINI_API_KEY": "Gemini API key", "OPENAI_API_KEY": "OpenAI API key", "OPENAI_BASE_URL": "OpenAI Base URL（相容服務才填）",
+    "ANTHROPIC_API_KEY": "Anthropic API key", "FAL_KEY": "fal.ai key", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
+    "DAILY_GEN_CAP": "每日最多產幾個商品（花錢/點數上限）", "DAILY_UPLOAD_CAP": "每日最多上架幾支", "UPLOAD_MODE": "上架方式",
+    "SHOPEE_VIDEO_UPLOAD_URL": "蝦皮短影音網頁上傳頁網址", "AFFILIATE_PICKS_URL": "分潤後台選品頁網址（選填）",
+    "APP_PASSWORD": "網頁密碼（選填；手機/區網使用建議設）",
+}
+SPEC_TYPES = {n: t for n, _, t in config.SPEC}
+
+
+def _field(name: str) -> str:
+    cur = getattr(config, name)
+    label = e(LABELS.get(name, name))
+    if name in PROVIDER_OPTIONS:
+        curv = ("1" if cur else "0") if SPEC_TYPES[name] is bool else cur
+        opts = "".join(f'<option value="{v}" {"selected" if v == curv else ""}>{e(t)}</option>' for v, t in PROVIDER_OPTIONS[name])
+        return f"<label>{label}<select name={name}>{opts}</select></label>"
+    if name in config.SECRETS:
+        hint = f"已設定（…{str(cur)[-4:]}）" if cur else "尚未設定"
+        return f'<label>{label} <small>{hint}</small><input type=password name={name} autocomplete=off placeholder="留空=不變更"></label>'
+    ph = ""
+    role = name.split("_")[0].lower()
+    if name.endswith("_MODEL") and role in ("text", "image", "video"):
+        ph = config.DEFAULT_MODELS.get((role, getattr(config, f"{role.upper()}_PROVIDER")), "")
+    return f'<label>{label}<input type=text name={name} value="{e(str(cur))}" placeholder="{e(ph)}"></label>'
+
+
+@app.get("/settings")
+def settings(saved: int = 0):
+    groups = ""
+    for title, names, role in SETTING_GROUPS:
+        test = (f'<button type=submit formaction="/settings/test/{role}" class=g formnovalidate>測試{"（會實際產 1 張圖，約幾分錢）" if role == "image" else ""}</button>'
+                if role else "")
+        groups += f'<div class=card><b>{e(title)}</b>{"".join(_field(n) for n in names)}{test}</div>'
+    note = "<div class=card>✅ 已儲存並立即生效</div>" if saved else ""
+    return page(f"""<h2>設定</h2>{note}<style>label{{display:block;margin:8px 0}}select,input[type=text],input[type=password]{{width:100%;box-sizing:border-box;padding:8px;font:inherit}}</style>
+<form method=post action=/settings>{groups}<button>儲存設定</button></form>
+<div class=card><b>最近紀錄</b><pre>{e(chr(10).join(worker.log[-8:]))}</pre></div>""")
+
+
+@app.post("/settings")
+async def settings_save(request: Request):
+    form = await request.form()
+    updates = {}
+    for name, default, typ in config.SPEC:
+        if name not in form:
+            continue
+        v = str(form[name]).replace("\n", " ").replace("\r", " ").strip()
+        if name in config.SECRETS and not v:
+            continue  # 秘密欄位留空 = 不變更
+        if typ is int:
+            try:
+                int(v or 0)
+            except ValueError:
+                continue
+        updates[name] = v
+    config.save_env(updates)
+    return back("/settings?saved=1")
+
+
+@app.post("/settings/test/{role}")
+async def settings_test(role: str, request: Request):
+    await settings_save(request)  # 先存目前表單內容再測
+    if role in ("text", "image", "video"):
+        def run():
+            worker.say(providers.check(role))
+
+        threading.Thread(target=run, daemon=True).start()
+    return back("/settings?saved=1")
 
 
 @app.get("/videos")

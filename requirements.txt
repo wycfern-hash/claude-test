@@ -9,3 +9,6 @@ pytest>=8
 pillow>=10
 edge-tts>=6.1
 openpyxl>=3.1
+openai>=1.40
+anthropic>=0.40
+fal-client>=0.5

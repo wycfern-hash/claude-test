@@ -36,9 +36,9 @@ def main() -> None:
         for where, why in r["failed"]:
             print(f"  ✗ {where}：{why}")
     elif args.cmd == "check-key":
-        from . import gemini_client
+        from . import providers
 
-        print("\n".join(gemini_client.check()))
+        print("\n".join(providers.check(r) for r in ("text", "image", "video")))
     elif args.cmd == "probe":
         from . import browser, webauto
 

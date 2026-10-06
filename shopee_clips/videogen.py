@@ -1,6 +1,6 @@
 """產片。VIDEO_PROVIDER：
   slideshow（預設、免費）：用核准的 5 張圖 + ffmpeg 合成 15 秒（slideshow.py）
-  veo（付費）：Veo API，Flow 網頁沒有官方 API
+  veo / fal（付費 API）：每段單獨產，ffmpeg 接起來、裁成 15 秒、換上配音（providers.py）
   flow：你用 Flow 的點數產（Flow 沒有官方 API，不能自動操作）。程式先備好提示詞與起始圖，
         你在「待產片」頁下載圖、複製提示詞、到 Flow 產 1~3 段，上傳 mp4，程式自動接起來裁成 15 秒並換上配音
 Veo 單支最長約 8 秒 → 15 秒 = 兩段（開箱+賣點1 / 賣點2+3+CTA）用 ffmpeg 接起來再裁成 15 秒。
@@ -13,31 +13,10 @@ import time
 from pathlib import Path
 
 from . import config, db
-from .gemini_client import client
-from . import slideshow
-from .scriptgen import get_script
+from . import providers, slideshow
+from .scriptgen import clips_needed, get_script, video_prompts
 
 TARGET_SECONDS = 15
-
-
-def _veo_clip(prompt: str, image_path: Path, out: Path) -> None:
-    from google.genai import types
-
-    c = client()
-    op = c.models.generate_videos(
-        model=config.VIDEO_MODEL,
-        prompt=prompt,
-        image=types.Image(image_bytes=image_path.read_bytes(), mime_type="image/png"),
-        config=types.GenerateVideosConfig(aspect_ratio="9:16", duration_seconds=8),
-    )
-    while not op.done:
-        time.sleep(10)
-        op = c.operations.get(op)
-    if not op.response or not op.response.generated_videos:
-        raise RuntimeError("Veo 沒有回傳影片（可能被安全過濾）")
-    vid = op.response.generated_videos[0]
-    c.files.download(file=vid.video)
-    vid.video.save(str(out))
 
 
 def concat_trim(clips: list[Path], out: Path, seconds: int = TARGET_SECONDS) -> None:
@@ -67,7 +46,7 @@ def run(conn) -> int:
     for row in db.by_status(conn, "image_approved"):
         if row["error"].startswith(("videogen:", "flow:")):
             continue  # 失敗不自動重試（避免重複花點數/算力）；首頁按「重試失敗項目」
-        if config.VIDEO_PROVIDER == "veo" and db.generated_today(conn) >= config.DAILY_GEN_CAP:
+        if config.VIDEO_PROVIDER in ("veo", "fal") and db.generated_today(conn) >= config.DAILY_GEN_CAP:
             break
         try:
             script = get_script(row)
@@ -81,14 +60,22 @@ def run(conn) -> int:
                 db.update(conn, row["id"], script=json.dumps(script, ensure_ascii=False), error="")
                 conn.commit()
                 continue  # 等你在「待產片」頁上傳 Flow 影片
-            else:
-                img = config.DATA_DIR / row["selected_image"]
+            else:  # veo / fal：逐段呼叫 API → finish_flow 接成 15 秒並配音（成功會直接進審片）
+                if not providers.configured("video"):
+                    raise providers.NotConfigured("影片 API 金鑰尚未設定")
+                imgs = [config.DATA_DIR / p for p in json.loads(row["selected_images"])] or [config.DATA_DIR / row["selected_image"]]
+                n_clips = clips_needed()
+                starts = [imgs[min(i * len(imgs) // n_clips, len(imgs) - 1)] for i in range(n_clips)]
                 clips = []
-                for i, key in enumerate(("video_prompt_1", "video_prompt_2"), 1):
-                    p = d / f"clip{i}.mp4"
-                    _veo_clip(script[key], img, p)
+                for i, (img, prompt) in enumerate(zip(starts, video_prompts(script, n_clips))):
+                    p = d / f"api_clip{i}.mp4"
+                    providers.video_clip(prompt, img, p)
                     clips.append(p)
-                concat_trim(clips, final)
+                db.update(conn, row["id"], script=json.dumps(script, ensure_ascii=False))
+                finish_flow(conn, row["id"], clips)
+                conn.commit()
+                n += 1
+                continue
         except Exception as e:  # noqa: BLE001
             db.update(conn, row["id"], error=f"videogen: {e}")
             conn.commit()

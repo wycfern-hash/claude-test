@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 
 from . import config, db
-from .gemini_client import client
+from . import providers
 
 IMAGE_PROMPT = """請參考附圖中的商品，重新生成一張全新的商品形象照（9:16 直式）。
 規則：
@@ -34,26 +34,17 @@ def download_refs(pid: int, urls: list[str]) -> list[Path]:
 
 
 def generate_for(conn, row) -> list[str]:
-    from google.genai import types
-
     refs = download_refs(row["id"], json.loads(row["ref_images"]))
     if not refs:
         raise RuntimeError("沒有參考圖，請先執行 enrich")
-    parts = [types.Part.from_bytes(data=p.read_bytes(), mime_type="image/jpeg") for p in refs]
     out_dir = config.IMG_DIR / str(row["id"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    c, saved = client(), []
+    saved = []
     for n in range(config.IMAGES_PER_PRODUCT):
         prompt = IMAGE_PROMPT.format(title=row["title"], variation=VARIATIONS[n % len(VARIATIONS)])
-        resp = c.models.generate_content(model=config.IMAGE_MODEL, contents=[prompt, *parts])
-        for part in resp.candidates[0].content.parts:
-            if getattr(part, "inline_data", None) and part.inline_data.data:
-                f = out_dir / f"{n}.png"
-                f.write_bytes(part.inline_data.data)
-                saved.append(str(f.relative_to(config.DATA_DIR)))
-                break
-    if not saved:
-        raise RuntimeError("Gemini 沒有回傳圖片（可能被安全過濾）")
+        f = out_dir / f"{n}.png"
+        f.write_bytes(providers.image_bytes(prompt, refs))
+        saved.append(str(f.relative_to(config.DATA_DIR)))
     return saved
 
 
@@ -68,7 +59,8 @@ def ref_files(pid: int) -> list[Path]:
 
 
 def _manual_only() -> bool:
-    return config.IMAGE_PROVIDER == "manual" or (config.IMAGE_PROVIDER == "auto" and not config.GEMINI_API_KEY)
+    """手動模式，或選了 API 供應商但還沒填 key → 不自動產，留在「待產圖」頁讓你手動上傳。"""
+    return config.IMAGE_PROVIDER == "manual" or not providers.configured("image")
 
 
 def run(conn) -> int:

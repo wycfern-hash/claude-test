@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from . import config, db
+from .scriptgen import video_prompts
 from .webauto import fetch_in_page, rx, site, step
 
 
@@ -80,7 +81,7 @@ def generate_clips(ctx, row, script: dict) -> list[Path]:
     imgs = [config.DATA_DIR / p for p in json.loads(row["selected_images"])] or [config.DATA_DIR / row["selected_image"]]
     n = max(1, min(config.FLOW_CLIPS_PER_PRODUCT, 3))
     starts = [imgs[min(i * len(imgs) // n, len(imgs) - 1)] for i in range(n)]  # 分散取圖，兩段不會從同一張開始
-    prompts = [script.get("video_prompt_1", ""), script.get("video_prompt_2", ""), script.get("video_prompt_1", "")][:n]
+    prompts = video_prompts(script, n)
     d = config.VID_DIR / str(row["id"]) / "flow"
     d.mkdir(parents=True, exist_ok=True)
     clips = []

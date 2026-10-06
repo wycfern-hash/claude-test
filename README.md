@@ -7,17 +7,22 @@
 → 自動寫 15 秒腳本(3 賣點+CTA) → Veo 產片 → 【你審片】 → 自動上架 或 匯出上架包(手機傳)
 ```
 
-## 各環節怎麼跑
-| 環節 | 預設 | 其他選項 |
+## 各環節與供應商（網頁「設定」頁選，自己填 API key）
+| 環節 | 可選供應商 | 需要的 key |
 |---|---|---|
-| 產圖 | `IMAGE_PROVIDER=auto`：有 `GEMINI_API_KEY` 就**自動產**；產不出來（沒額度/模型不開放）就留在「待產圖」頁，給你參考圖+提示詞，你在 Gemini App 產完上傳 | `manual` 一律手動；`api` 只用 API |
-| 賣點/腳本 | **AI 自己生成**：Gemini 文字模型看商品說明+商品圖，歸納 3 賣點、寫腳本、標題、文案、配音稿（免費額度即可）。可在待產圖/審圖頁填賣點覆蓋 | 沒 key：用你填的賣點+範本 |
-| 產片 | `VIDEO_PROVIDER=slideshow`：5 張圖×3 秒=15 秒，推近動畫+字幕+配音，全自動、免費 | `flow`：用 Flow 點數產，上傳 mp4 回來（見下）；`veo`：API，付費 |
-| 配音 | 曉臻（`zh-TW-HsiaoChenNeural`，免費 edge-tts） | `TTS=0` 不配音 |
-| 字幕 | 影片上只會有賣點「內容」文字，不會出現 hook/賣點1/CTA 這類標籤 | `SUBTITLES=0` 完全不要字幕 |
+| 腳本文案（賣點、腳本、標題、文案、配音稿） | `gemini`（有免費額度）／`openai`（含相容服務，填 Base URL）／`claude`／`template`（不用 AI，吃你填的賣點） | 對應供應商的 key |
+| 圖片 | `gemini`／`openai`／`browser`（操控 Chrome 用 Gemini 網頁）／`manual`（手動上傳） | API 供應商要 key；後兩者不用 |
+| 影片 | `veo`（Gemini API）／`fal`（fal.ai 的 Kling 等圖生影片）／`slideshow`（5 張圖合成，免費）／`flow_browser`／`flow` | veo 用 Gemini key；fal 用 FAL_KEY |
+
+- **腳本會自己生成**：選 AI 供應商並填 key，程式會把商品說明＋商品圖交給模型，自己歸納 3 個賣點，產出 hook、腳本、配音稿、標題、貼文文案、hashtag。你在待產圖/審圖頁填的賣點會優先採用。沒填 key 或 AI 失敗時，退回你填的賣點（或商品說明原句），不會編造。
+- **一支 Gemini key 可以同時做腳本 + 圖片 + 影片（Veo）**；不想用付費影片就選 `slideshow`。
+- 設定頁每區有「測試」按鈕（圖片測試會實際產 1 張；影片只檢查 key，避免誤燒錢）。`DAILY_GEN_CAP` 限制每天處理幾個商品。
+- 影片 API 單段只有幾秒（veo 8 秒、fal 約 5 秒），程式自動分 2~3 段產、接成 15 秒、轉 1080×1920、換上曉臻配音。
+- 手機/區網使用請在設定頁填「網頁密碼」。
+- 配音 `zh-TW-HsiaoChenNeural` = 曉臻（免費 edge-tts）；字幕只含賣點內容，不會出現「賣點1/hook/CTA」標籤，`SUBTITLES=0` 可全關。
 
 ### 不用 API key：讓程式操控你的 Chrome（實驗性、**尚未在真實 Gemini/Flow 介面驗證**）
-`.env` 設 `IMAGE_PROVIDER=browser`、`VIDEO_PROVIDER=flow_browser`。
+設定頁把圖片選 `browser`、影片選 `flow_browser`。
 1. 首頁按「開啟自動化 Chrome」，會開一個**獨立資料夾**的 Chrome（`data/browser_profile`），在裡面手動登入 Google 與蝦皮一次。程式不接觸帳密；登入狀態留在這個 Chrome。
 2. 程式透過 CDP 連上它：每張圖開新對話，附賣家參考圖+提示詞，等新圖出現再下載；Flow 則用「起始圖+提示詞」產 2 段、下載，再接成 15 秒換上曉臻配音。
 3. `DAILY_GEN_CAP`（預設每天 10 個商品）限制每日處理量，因為你的 Gemini/Flow 點數與每日額度有限。失敗不會自動重試（避免白燒點數），首頁按「重試失敗項目」。
@@ -30,13 +35,11 @@
 ### 手動用 Flow（不讓程式操控瀏覽器）
 `VIDEO_PROVIDER=flow`：審圖核准後「待產片」頁給起始圖與提示詞，你到 Flow 產完把 mp4 傳回，程式接成 15 秒並配音。
 
-### 你的 Gemini key 能不能用？
-首頁按「檢查 Gemini key 能不能用」，會各測一次文字與產圖，結果顯示在執行紀錄。免費 key 通常文字可用；產圖不一定。
 
 ## 開始（Windows）
 1. 安裝 [Python 3.11+](https://www.python.org/downloads/)（安裝時勾 **Add python.exe to PATH**）、Google Chrome、ffmpeg（命令列執行 `winget install ffmpeg`）。
 2. 下載這個專案（GitHub → Code → Download ZIP）並解壓縮。
-3. 編輯 `.env.example` 另存成 `.env`（沒有的話第一次啟動會自動複製）。要自動產圖/產片請設 `IMAGE_PROVIDER=browser`、`VIDEO_PROVIDER=flow_browser`。
+3. 不用手改任何檔案：啟動後到網頁「設定」頁填 API key、選供應商即可（會自動存成 `.env`）。
 4. 雙擊 `start.bat`。第一次會自動安裝套件，之後秒開。黑色視窗是程式本體，**要開著**，關掉就停。
 5. 瀏覽器開 `http://localhost:8000`（手機同 Wi-Fi 開視窗裡印出的網址）。
 6. 首頁「開啟自動化 Chrome」→ 在跳出的 Chrome 登入 Google 與蝦皮 →「匯入 Excel」→ 之後到「審圖」「審片」「上架包」頁操作。
