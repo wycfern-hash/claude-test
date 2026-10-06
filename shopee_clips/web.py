@@ -64,7 +64,7 @@ def home():
     cfg = " ｜ ".join([mark("text", "腳本"), mark("image", "圖片"), mark("video", "影片")])
     errs = "".join(f'<div class=err>#{r["id"]} {e(r["title"][:20])}：{e(r["error"])}</div>' for r in failed)
     return page(f"""<h2>蝦皮分潤短影音</h2><div class=card>{e(stats) or '尚無商品'}</div>
-<div class=card>{e(cfg)} <a href="/settings">→ 設定 API key / 供應商</a></div>
+<div class=card>{e(cfg)}<br>{"填入 API key 就會自動啟用 AI 產圖/腳本/影片。" if not any([config.GEMINI_API_KEY, config.OPENAI_API_KEY, config.ANTHROPIC_API_KEY, config.FAL_KEY]) else ""} <a href="/settings">→ 填 API key</a></div>
 <form method=post action=/import-excel enctype=multipart/form-data class=card><b>匯入 Excel 選品（.xlsx）</b><br>
 表頭請含「商品連結」，可選：商品名稱、價格、賣點1~3<input type=file name=file accept=".xlsx"><button>匯入</button></form>
 <form method=post action=/add class=card><b>貼商品連結（一行一個）</b>
@@ -317,36 +317,32 @@ async def basic_auth(request: Request, call_next):
     return await call_next(request)
 
 
+AUTO = ("auto", "自動（依填的 key 決定）")
 PROVIDER_OPTIONS = {
-    "TEXT_PROVIDER": [("gemini", "Gemini（有免費額度）"), ("openai", "OpenAI / 相容服務"), ("claude", "Claude"),
+    "TEXT_PROVIDER": [AUTO, ("gemini", "Gemini"), ("openai", "OpenAI / 相容服務"), ("claude", "Claude"),
                       ("template", "不用 AI（範本 + 我填的賣點）")],
-    "IMAGE_PROVIDER": [("gemini", "Gemini 產圖（API）"), ("openai", "OpenAI 產圖（API）"),
+    "IMAGE_PROVIDER": [AUTO, ("gemini", "Gemini 產圖（API）"), ("openai", "OpenAI 產圖（API）"),
                        ("browser", "操控我的 Chrome 用 Gemini 網頁（免 API）"), ("manual", "手動上傳（免 API）")],
     "VIDEO_MODE": [("slideshow", "A. 圖片合成 15 秒（免費、不用 API）"), ("ai", "B. AI 生成影片（用新圖+腳本，花錢/點數）")],
-    "VIDEO_PROVIDER": [("veo", "Veo（Gemini API，付費）"), ("fal", "fal.ai 圖生影片（Kling 等，付費）"),
+    "VIDEO_PROVIDER": [AUTO, ("veo", "Veo（Gemini API，付費）"), ("fal", "fal.ai 圖生影片（Kling 等，付費）"),
                        ("flow_browser", "操控我的 Chrome 用 Flow 點數（免 API）"), ("flow", "手動：我自己在 Flow 產、上傳 mp4")],
     "UPLOAD_MODE": [("manual", "只匯出上架包（手機/電腦自己傳）"), ("dryrun", "自動填好但不發佈（先測這個）"),
                     ("auto", "自動發佈")],
     "TTS": [("1", "開（曉臻）"), ("0", "關")],
     "SUBTITLES": [("1", "開（只含賣點內容文字）"), ("0", "關")],
 }
-SETTING_GROUPS = [
-    ("腳本文案（標題、賣點、配音稿、貼文文案）", ["TEXT_PROVIDER", "TEXT_MODEL"], "text"),
-    ("圖片（用賣家圖當參考，重新生成全新商品圖）", ["IMAGE_PROVIDER", "IMAGE_MODEL", "IMAGES_PER_PRODUCT"], "image"),
-    ("影片（預設類型可在審圖頁逐商品覆蓋）", ["VIDEO_MODE", "VIDEO_PROVIDER", "VIDEO_MODEL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS"], "video"),
-    ("API 金鑰（留空 = 不變更；金鑰只存在你電腦的 .env）", ["GEMINI_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "FAL_KEY"], None),
-    ("配音與字幕", ["TTS", "TTS_VOICE", "SUBTITLES"], None),
-    ("流程與上架", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "SHOPEE_VIDEO_UPLOAD_URL", "AFFILIATE_PICKS_URL", "APP_PASSWORD"], None),
-]
+KEY_FIELDS = ["GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FAL_KEY"]
 LABELS = {
-    "TEXT_PROVIDER": "供應商", "TEXT_MODEL": "模型（空白=預設）", "IMAGE_PROVIDER": "供應商", "IMAGE_MODEL": "模型（空白=預設）",
-    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型", "VIDEO_PROVIDER": "AI 影片引擎（類型 B 用）", "VIDEO_MODEL": "模型（空白=預設）",
+    "TEXT_PROVIDER": "腳本供應商", "TEXT_MODEL": "腳本模型（空白=預設）", "IMAGE_PROVIDER": "圖片供應商", "IMAGE_MODEL": "圖片模型（空白=預設）",
+    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型（每個商品可在審圖頁單獨改）",
+    "VIDEO_PROVIDER": "AI 影片引擎（類型 B 用）", "VIDEO_MODEL": "影片模型（空白=預設）",
     "VIDEO_CLIP_SECONDS": "單段秒數（0=預設）", "FAL_EXTRA_ARGS": "fal 額外參數 JSON（選填）",
-    "GEMINI_API_KEY": "Gemini API key", "OPENAI_API_KEY": "OpenAI API key", "OPENAI_BASE_URL": "OpenAI Base URL（相容服務才填）",
-    "ANTHROPIC_API_KEY": "Anthropic API key", "FAL_KEY": "fal.ai key", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
-    "DAILY_GEN_CAP": "每日最多產幾個商品（花錢/點數上限）", "DAILY_UPLOAD_CAP": "每日最多上架幾支", "UPLOAD_MODE": "上架方式",
+    "GEMINI_API_KEY": "Gemini API key（一支就能做腳本＋產圖＋Veo 影片）", "OPENAI_API_KEY": "OpenAI API key（腳本＋產圖）",
+    "OPENAI_BASE_URL": "OpenAI Base URL（相容服務才填）", "ANTHROPIC_API_KEY": "Anthropic API key（腳本）",
+    "FAL_KEY": "fal.ai key（AI 影片）", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
+    "DAILY_GEN_CAP": "每日最多用 AI 產幾支影片（花錢/點數上限）", "DAILY_UPLOAD_CAP": "每日最多上架幾支", "UPLOAD_MODE": "上架方式",
     "SHOPEE_VIDEO_UPLOAD_URL": "蝦皮短影音網頁上傳頁網址", "AFFILIATE_PICKS_URL": "分潤後台選品頁網址（選填）",
-    "APP_PASSWORD": "網頁密碼（選填；手機/區網使用建議設）",
+    "APP_PASSWORD": "網頁密碼（選填；手機/區網使用建議設）", "FLOW_CLIPS_PER_PRODUCT": "Flow 每商品幾段",
 }
 SPEC_TYPES = {n: t for n, _, t in config.SPEC}
 
@@ -355,29 +351,41 @@ def _field(name: str) -> str:
     cur = getattr(config, name)
     label = e(LABELS.get(name, name))
     if name in PROVIDER_OPTIONS:
-        curv = ("1" if cur else "0") if SPEC_TYPES[name] is bool else cur
+        curv = ("1" if cur else "0") if SPEC_TYPES[name] is bool else config.raw(name)
         opts = "".join(f'<option value="{v}" {"selected" if v == curv else ""}>{e(t)}</option>' for v, t in PROVIDER_OPTIONS[name])
         return f"<label>{label}<select name={name}>{opts}</select></label>"
     if name in config.SECRETS:
-        hint = f"已設定（…{str(cur)[-4:]}）" if cur else "尚未設定"
-        return f'<label>{label} <small>{hint}</small><input type=password name={name} autocomplete=off placeholder="留空=不變更"></label>'
+        hint = f"✅ 已設定（…{str(cur)[-4:]}）" if cur else "尚未設定"
+        return f'<label>{label} <small>{hint}</small><input type=password name={name} autocomplete=off placeholder="貼上 key；留空=不變更"></label>'
     ph = ""
     role = name.split("_")[0].lower()
     if name.endswith("_MODEL") and role in ("text", "image", "video"):
         ph = config.DEFAULT_MODELS.get((role, getattr(config, f"{role.upper()}_PROVIDER")), "")
-    return f'<label>{label}<input type=text name={name} value="{e(str(cur))}" placeholder="{e(ph)}"></label>'
+    return f'<label>{label}<input type=text name={name} value="{e(config.raw(name))}" placeholder="{e(ph)}"></label>'
+
+
+def _card(title: str, names: list[str], extra: str = "") -> str:
+    return f'<div class=card><b>{e(title)}</b>{"".join(_field(n) for n in names)}{extra}</div>'
 
 
 @app.get("/settings")
 def settings(saved: int = 0):
-    groups = ""
-    for title, names, role in SETTING_GROUPS:
-        test = (f'<button type=submit formaction="/settings/test/{role}" class=g formnovalidate>測試{"（會實際產 1 張圖，約幾分錢）" if role == "image" else ""}</button>'
-                if role else "")
-        groups += f'<div class=card><b>{e(title)}</b>{"".join(_field(n) for n in names)}{test}</div>'
     note = "<div class=card>✅ 已儲存並立即生效</div>" if saved else ""
+    status = "".join(f"<li>{e(x)}</li>" for x in config.summary())
+    tests = ('<button type=submit formaction="/settings/test/text" class=g formnovalidate>測試腳本</button> '
+             '<button type=submit formaction="/settings/test/image" class=g formnovalidate>測試產圖（會實際產 1 張，約幾分錢）</button> '
+             '<button type=submit formaction="/settings/test/video" class=g formnovalidate>檢查影片 key</button>')
+    keys = (f'<div class=card><b>① 填入 API key（填了就自動啟用，不用選供應商）</b>{"".join(_field(n) for n in KEY_FIELDS)}'
+            f'{_field("OPENAI_BASE_URL")}<p><b>目前自動啟用：</b></p><ul>{status}</ul>{tests}</div>')
+    advanced = ('<details class=card><summary><b>進階：指定供應商與模型（通常不用動）</b></summary>'
+                + "".join(_field(n) for n in ["TEXT_PROVIDER", "TEXT_MODEL", "IMAGE_PROVIDER", "IMAGE_MODEL", "IMAGES_PER_PRODUCT",
+                                              "VIDEO_PROVIDER", "VIDEO_MODEL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS", "FLOW_CLIPS_PER_PRODUCT"])
+                + "</details>")
+    body = (keys + _card("② 影片類型預設", ["VIDEO_MODE"]) + _card("③ 配音與字幕", ["TTS", "TTS_VOICE", "SUBTITLES"])
+            + _card("④ 流程與上架", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "SHOPEE_VIDEO_UPLOAD_URL",
+                                    "AFFILIATE_PICKS_URL", "APP_PASSWORD"]) + advanced)
     return page(f"""<h2>設定</h2>{note}<style>label{{display:block;margin:8px 0}}select,input[type=text],input[type=password]{{width:100%;box-sizing:border-box;padding:8px;font:inherit}}</style>
-<form method=post action=/settings>{groups}<button>儲存設定</button></form>
+<form method=post action=/settings>{body}<button>儲存設定</button></form>
 <div class=card><b>最近紀錄</b><pre>{e(chr(10).join(worker.log[-8:]))}</pre></div>""")
 
 

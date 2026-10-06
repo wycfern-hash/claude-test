@@ -7,10 +7,21 @@
 → 自動寫 15 秒腳本(3 賣點+CTA) → Veo 產片 → 【你審片】 → 自動上架 或 匯出上架包(手機傳)
 ```
 
-## 各環節與供應商（網頁「設定」頁選，自己填 API key）
+## API key：貼上就自動啟用（網頁「設定」頁）
+不用選供應商。把 key 貼到設定頁最上面的欄位，程式依填了哪些 key 自動決定：腳本/產圖用 Gemini > OpenAI > Claude，AI 影片用 Gemini（Veo）> fal。設定頁會列出「目前自動啟用了什麼」。供應商與模型的下拉選單收在最下面的「進階」，平常不用動。
+
+| 你填的 key | 自動啟用 |
+|---|---|
+| 只填 Gemini | 腳本 + 產圖 + 類型 B 的 Veo 影片，全包 |
+| 只填 OpenAI | 腳本 + 產圖（類型 B 需另填 Gemini 或 fal key） |
+| 只填 Claude | 腳本（產圖需另填 Gemini/OpenAI，或手動上傳） |
+| 只填 fal | 類型 B 影片 |
+| 都不填 | 腳本用你填的賣點 + 範本、圖手動上傳、影片用類型 A 圖片合成（全免費） |
+
+### 可用的供應商一覽
 | 環節 | 可選供應商 | 需要的 key |
 |---|---|---|
-| 腳本文案（賣點、腳本、標題、文案、配音稿） | `gemini`（有免費額度）／`openai`（含相容服務，填 Base URL）／`claude`／`template`（不用 AI，吃你填的賣點） | 對應供應商的 key |
+| 腳本文案（賣點、腳本、標題、文案、配音稿） | `gemini`／`openai`（含相容服務，填 Base URL）／`claude`／`template`（不用 AI，吃你填的賣點） | 對應供應商的 key |
 | 圖片 | `gemini`／`openai`／`browser`（操控 Chrome 用 Gemini 網頁）／`manual`（手動上傳） | API 供應商要 key；後兩者不用 |
 | 影片 | 兩種類型見下方；類型 B 的引擎：`veo`（Gemini API）／`fal`（fal.ai 的 Kling 等）／`flow_browser`／`flow` | veo 用 Gemini key；fal 用 FAL_KEY |
 

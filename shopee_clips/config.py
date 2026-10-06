@@ -18,15 +18,15 @@ SELECTORS_PATH = Path("config/shopee_upload.json")
 # (名稱, 預設值, 型別)。網頁設定頁與 reload() 共用這份清單。
 SPEC = [
     # 腳本文案（LLM）
-    ("TEXT_PROVIDER", "gemini", str),      # gemini | openai | claude | template(不用 AI，吃你填的賣點)
+    ("TEXT_PROVIDER", "auto", str),        # auto(依填的 key 自動決定) | gemini | openai | claude | template(不用 AI，吃你填的賣點)
     ("TEXT_MODEL", "", str),               # 空白 = 該供應商預設
     # 圖片
-    ("IMAGE_PROVIDER", "gemini", str),     # gemini | openai | browser | manual
+    ("IMAGE_PROVIDER", "auto", str),       # auto | gemini | openai | browser | manual
     ("IMAGE_MODEL", "", str),
     ("IMAGES_PER_PRODUCT", 5, int),
     # 影片
     ("VIDEO_MODE", "slideshow", str),      # 預設影片類型：slideshow=5 張圖合成 | ai=用新圖+腳本讓 AI 生成（每個商品可在審圖頁單獨改）
-    ("VIDEO_PROVIDER", "veo", str),        # AI 影片引擎（VIDEO_MODE=ai 時用）：veo | fal | flow_browser | flow
+    ("VIDEO_PROVIDER", "auto", str),       # AI 影片引擎（VIDEO_MODE=ai 時用）：auto | veo | fal | flow_browser | flow
     ("VIDEO_MODEL", "", str),
     ("VIDEO_CLIP_SECONDS", 0, int),        # 單段秒數，0 = 供應商預設（veo 8、fal 5）
     ("FAL_EXTRA_ARGS", "", str),           # fal 模型額外參數 JSON，例如 {"duration":"5"}
@@ -76,22 +76,58 @@ def _cast(raw: str, typ):
     return typ(raw) if typ is str else typ(raw or 0)
 
 
+RAW: dict = {}  # 設定頁顯示用：使用者實際填的值（保留 "auto"，不是解析後的結果）
+
+
+def raw(name: str) -> str:
+    return RAW.get(name, "")
+
+
+def _resolve_auto() -> None:
+    """供應商留「自動」時，依填了哪些 key 決定：Gemini > OpenAI > Claude/fal。沒 key 就退回不花錢的做法。"""
+    g = globals()
+    if g["TEXT_PROVIDER"] == "auto":
+        g["TEXT_PROVIDER"] = ("gemini" if g["GEMINI_API_KEY"] else "openai" if g["OPENAI_API_KEY"]
+                              else "claude" if g["ANTHROPIC_API_KEY"] else "template")
+    if g["IMAGE_PROVIDER"] == "auto":
+        g["IMAGE_PROVIDER"] = "gemini" if g["GEMINI_API_KEY"] else "openai" if g["OPENAI_API_KEY"] else "manual"
+    if g["VIDEO_PROVIDER"] == "auto":
+        g["VIDEO_PROVIDER"] = "veo" if g["GEMINI_API_KEY"] else "fal" if g["FAL_KEY"] else "veo"
+
+
+def summary() -> list[str]:
+    """設定頁最上面的『目前自動啟用了什麼』。"""
+    g = globals()
+    out = []
+    t = g["TEXT_PROVIDER"]
+    out.append("腳本/賣點：" + ("AI（" + t + "）自己生成" if t != "template" else "尚未填 key → 用你填的賣點 + 範本"))
+    i = g["IMAGE_PROVIDER"]
+    out.append("產圖：" + {"manual": "尚未填 key → 你手動上傳", "browser": "操控 Chrome 用 Gemini 網頁"}.get(i, f"AI（{i}）自動產"))
+    v = g["VIDEO_PROVIDER"]
+    has_video_key = (v == "veo" and bool(g["GEMINI_API_KEY"])) or (v == "fal" and bool(g["FAL_KEY"])) or v in ("flow", "flow_browser")
+    out.append("AI 生成影片（類型 B）：" + (f"可用（{v}）" if has_video_key else "尚無 → 需要 Gemini key（Veo）或 fal key；類型 A 圖片合成不需要"))
+    return out
+
+
 def reload() -> None:
     load_dotenv(ENV_PATH, override=True)
     g = globals()
+    RAW.clear()
     for name, default, typ in SPEC:
-        raw = os.getenv(name)
-        g[name] = default if raw is None else _cast(raw, typ)
-    # 舊版相容：VIDEO_PROVIDER=slideshow 代表「圖片合成」模式；其他值且沒設 VIDEO_MODE 代表 AI 模式
+        raw_v = os.getenv(name)
+        RAW[name] = str(default) if raw_v is None else raw_v
+        g[name] = default if raw_v is None else _cast(raw_v, typ)
+    # 舊版相容：VIDEO_PROVIDER=slideshow 代表「圖片合成」模式；其他明確的引擎值且沒設 VIDEO_MODE 代表 AI 模式
     if g["VIDEO_PROVIDER"] == "slideshow":
-        g["VIDEO_PROVIDER"] = "veo"
+        g["VIDEO_PROVIDER"] = "auto"
+        RAW["VIDEO_PROVIDER"] = "auto"
         if os.getenv("VIDEO_MODE") is None:
             g["VIDEO_MODE"] = "slideshow"
-    elif os.getenv("VIDEO_PROVIDER") and os.getenv("VIDEO_MODE") is None:
+    elif os.getenv("VIDEO_PROVIDER") not in (None, "", "auto") and os.getenv("VIDEO_MODE") is None:
         g["VIDEO_MODE"] = "ai"
-    # 舊版相容：IMAGE_PROVIDER=auto/api 等同 gemini
-    if g["IMAGE_PROVIDER"] in ("auto", "api"):
-        g["IMAGE_PROVIDER"] = "gemini"
+    if g["IMAGE_PROVIDER"] == "api":  # 舊值
+        g["IMAGE_PROVIDER"] = RAW["IMAGE_PROVIDER"] = "auto"
+    _resolve_auto()
 
 
 def save_env(updates: dict) -> None:

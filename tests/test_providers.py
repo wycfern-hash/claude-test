@@ -180,7 +180,9 @@ def test_openai_and_claude_payloads(monkeypatch):
 
 
 def test_check_reports_missing_key():
-    assert "❌" in providers.check("text")           # 預設 gemini 但沒填 key
+    assert "不使用 AI" in providers.check("text")     # 沒填任何 key → 範本模式
+    config.save_env({"TEXT_PROVIDER": "gemini"})
+    assert "❌" in providers.check("text")           # 明確指定 gemini 但沒 key
     config.save_env({"VIDEO_PROVIDER": "flow"})
     assert "✅" in providers.check("video")
 
@@ -272,3 +274,40 @@ def test_legacy_video_provider_env(monkeypatch):
     monkeypatch.setenv("VIDEO_MODE", "slideshow")
     config.reload()
     assert config.VIDEO_MODE == "slideshow"
+
+
+def test_auto_detect_from_keys():
+    """只要填 key 就自動啟用，不必選供應商。"""
+    assert (config.TEXT_PROVIDER, config.IMAGE_PROVIDER) == ("template", "manual")
+    config.save_env({"OPENAI_API_KEY": "o"})
+    assert (config.TEXT_PROVIDER, config.IMAGE_PROVIDER) == ("openai", "openai")
+    assert not providers.configured("video")                          # OpenAI 沒有影片引擎
+    config.save_env({"ANTHROPIC_API_KEY": "a"})
+    assert config.TEXT_PROVIDER == "openai"                           # 優先序 Gemini > OpenAI > Claude
+    config.save_env({"GEMINI_API_KEY": "g"})
+    assert (config.TEXT_PROVIDER, config.IMAGE_PROVIDER, config.VIDEO_PROVIDER) == ("gemini", "gemini", "veo")
+    assert providers.configured("video")                              # 一支 Gemini key：腳本+圖+Veo
+    config.save_env({"GEMINI_API_KEY": "", "OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": "", "FAL_KEY": "f"})
+    assert config.VIDEO_PROVIDER == "fal" and providers.configured("video")
+    config.save_env({"FAL_KEY": "", "TEXT_PROVIDER": "claude", "ANTHROPIC_API_KEY": "a"})   # 明確指定仍然優先
+    assert config.TEXT_PROVIDER == "claude"
+
+
+def test_settings_page_leads_with_keys_and_keeps_auto():
+    from shopee_clips.web import app
+
+    c = TestClient(app)
+    html = c.get("/settings").text
+    assert html.index("填入 API key") < html.index("進階") and "<details" in html      # key 在最前，供應商選項收在進階
+    c.post("/settings", data={"GEMINI_API_KEY": "g-key-9999"})                        # 只填 key
+    assert config.TEXT_PROVIDER == "gemini" and config.RAW["TEXT_PROVIDER"] == "auto"
+    html = c.get("/settings").text
+    assert "g-key-9999" not in html and "…9999" in html
+    assert 'value="auto" selected' in html                                            # 儲存後仍是「自動」，沒被解析值覆蓋
+    c.post("/settings", data={"TEXT_PROVIDER": "auto", "GEMINI_API_KEY": ""})
+    assert config.GEMINI_API_KEY == "g-key-9999"
+
+
+def test_auto_provider_env_does_not_flip_video_mode():
+    config.save_env({"VIDEO_PROVIDER": "auto"})
+    assert config.VIDEO_MODE == "slideshow"                           # 'auto' 不應被當成舊版「AI 模式」訊號
