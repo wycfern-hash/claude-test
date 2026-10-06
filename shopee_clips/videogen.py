@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from . import config, db
-from . import providers, slideshow
+from . import characters, providers, slideshow
 from .scriptgen import clips_needed, get_script, video_prompts
 
 TARGET_SECONDS = 15
@@ -50,7 +50,7 @@ def _imgs(row) -> list[Path]:
 def _ai_clips(row, script: dict, d: Path) -> list[Path]:
     """veo / fal：依腳本的影片提示詞，從核准的圖逐段產（單段幾秒，湊滿 15 秒）。"""
     if not providers.configured("video"):
-        raise providers.NotConfigured("影片 API 金鑰尚未設定（設定頁）")
+        raise providers.NotConfigured("AI 影片" + (providers.missing("video") or "未就緒") + "（設定頁）")
     imgs, n_clips = _imgs(row), clips_needed()
     starts = [imgs[min(i * len(imgs) // n_clips, len(imgs) - 1)] for i in range(n_clips)]
     clips = []
@@ -76,7 +76,7 @@ def run(conn) -> int:
                 d = config.VID_DIR / str(row["id"])
                 d.mkdir(parents=True, exist_ok=True)
                 final = d / "final.mp4"
-                slideshow.build(_imgs(row), script, final)
+                slideshow.build(_imgs(row), script, final, characters.voice_for(row))
                 db.move(conn, row["id"], "video_review", script=json.dumps(script, ensure_ascii=False),
                         video_mode="slideshow", video_path=str(final.relative_to(config.DATA_DIR)),
                         video_title=script["video_title"], video_caption=build_caption(script), error="")
@@ -84,7 +84,7 @@ def run(conn) -> int:
                 n += 1
                 continue
             if config.VIDEO_PROVIDER not in ("veo", "fal", "flow_browser", "flow"):
-                raise RuntimeError(f"AI 影片引擎 {config.VIDEO_PROVIDER!r} 無效，請在設定頁選 veo / fal / flow_browser / flow")
+                raise RuntimeError("此商品選了「類型 B：AI 生成影片」，但設定頁還沒選 AI 影片服務（Veo / fal / Flow）")
             if config.VIDEO_PROVIDER == "flow_browser":
                 flow_rows.append(row)
                 continue
@@ -130,12 +130,13 @@ def finish_flow(conn, pid: int, clips: list[Path]) -> None:
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-t", str(TARGET_SECONDS),
                     "-c", "copy", str(joined)], check=True, capture_output=True)
     voice = d / "voice.mp3"
-    if slideshow.tts(script.get("voiceover", ""), voice):
+    if slideshow.tts(script.get("voiceover", ""), voice, characters.voice_for(row)):
         subprocess.run(["ffmpeg", "-y", "-i", str(joined), "-i", str(voice), "-filter_complex", "[1:a]apad[a]",
                         "-map", "0:v", "-map", "[a]", "-shortest", "-c:v", "copy", "-c:a", "aac", str(final)],
                        check=True, capture_output=True)
     else:
         shutil.copy(joined, final)
+    slideshow.apply_ai_label(final)
     db.move(conn, pid, "video_review", script=json.dumps(script, ensure_ascii=False), video_mode="ai",
             video_path=str(final.relative_to(config.DATA_DIR)),
             video_title=script["video_title"], video_caption=build_caption(script), error="")

@@ -67,7 +67,7 @@ def caption_overlay(text: str, out: Path) -> None:
     layer.save(out)
 
 
-def tts(text: str, out: Path) -> bool:
+def tts(text: str, out: Path, voice: str | None = None) -> bool:
     """免費 edge-tts（非官方、免金鑰）。失敗就回 False，影片照樣無配音輸出。"""
     if not (config.TTS and text):
         return False
@@ -75,14 +75,14 @@ def tts(text: str, out: Path) -> bool:
         import edge_tts
 
         rate = max(0, min(40, int((len(text) / 65 - 1) * 100)))
-        comm = edge_tts.Communicate(text, config.TTS_VOICE, rate=f"+{rate}%")
+        comm = edge_tts.Communicate(text, voice or config.TTS_VOICE, rate=f"+{rate}%")
         asyncio.run(comm.save(str(out)))
         return out.exists()
     except Exception:  # noqa: BLE001
         return False
 
 
-def build(image_paths: list[Path], script: dict, out: Path) -> Path:
+def build(image_paths: list[Path], script: dict, out: Path, voice: str | None = None) -> Path:
     if not shutil.which("ffmpeg"):
         raise RuntimeError("需要安裝 ffmpeg")
     if not image_paths:
@@ -108,11 +108,30 @@ def build(image_paths: list[Path], script: dict, out: Path) -> Path:
     silent = work / "silent.mp4"
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(silent)],
                    check=True, capture_output=True)
-    voice = work / "voice.mp3"
-    if tts(script.get("voiceover", ""), voice):
-        subprocess.run(["ffmpeg", "-y", "-i", str(silent), "-i", str(voice), "-filter_complex", "[1:a]apad[a]",
+    if tts(script.get("voiceover", ""), work / "voice.mp3", voice):
+        subprocess.run(["ffmpeg", "-y", "-i", str(silent), "-i", str(work / "voice.mp3"), "-filter_complex", "[1:a]apad[a]",
                         "-map", "0:v", "-map", "[a]", "-t", str(TOTAL), "-c:v", "copy", "-c:a", "aac", str(out)],
                        check=True, capture_output=True)
     else:
         shutil.copy(silent, out)
+    apply_ai_label(out)
     return out
+
+
+def apply_ai_label(video: Path) -> None:
+    """在影片左上角加「AI 生成」標示（就地覆蓋）。設定頁 AI_LABEL 可關。"""
+    if not config.AI_LABEL:
+        return
+    ov, tmp = video.with_suffix(".label.png"), video.with_suffix(".label.mp4")
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    font = ImageFont.truetype(find_font(), 40)
+    text = "AI 生成"
+    tw = d.textlength(text, font=font)
+    d.rounded_rectangle((36, 96, 36 + tw + 40, 96 + 66), 16, fill=(0, 0, 0, 140))
+    d.text((56, 104), text, font=font, fill=(255, 255, 255, 235))
+    layer.save(ov)
+    subprocess.run(["ffmpeg", "-y", "-i", str(video), "-i", str(ov), "-filter_complex", "[0:v][1:v]overlay=0:0,format=yuv420p",
+                    "-map", "0:a?", "-c:v", "libx264", "-c:a", "copy", str(tmp)], check=True, capture_output=True)
+    tmp.replace(video)
+    ov.unlink()

@@ -19,14 +19,44 @@ class NotConfigured(RuntimeError):
     pass
 
 
+ROLE_NAMES = {"text": "腳本", "image": "圖片", "video": "AI 影片"}
+
+
+def missing(role: str) -> str | None:
+    """該角色還缺什麼才能呼叫 API；None = 都齊了。沒有任何預設：要使用者自己選服務、選模型、填 key。"""
+    provider = getattr(config, f"{role.upper()}_PROVIDER")
+    if not provider:
+        return "尚未選擇服務"
+    key = config.KEY_FOR.get(provider)
+    if key is None:
+        return None  # browser / manual / flow 系列不需要 API
+    if not getattr(config, key):
+        return f"尚未填 {provider} 的 API key"
+    if not config.model_for(role):
+        return "尚未選擇模型"
+    return None
+
+
 def configured(role: str) -> bool:
-    """該角色目前選的供應商，金鑰有沒有填。"""
-    need = {
-        ("text", "gemini"): "GEMINI_API_KEY", ("text", "openai"): "OPENAI_API_KEY", ("text", "claude"): "ANTHROPIC_API_KEY",
-        ("image", "gemini"): "GEMINI_API_KEY", ("image", "openai"): "OPENAI_API_KEY",
-        ("video", "veo"): "GEMINI_API_KEY", ("video", "fal"): "FAL_KEY",
-    }.get((role, getattr(config, f"{role.upper()}_PROVIDER")))
-    return bool(need and getattr(config, need))
+    """選了需要 key 的服務，而且 key、模型都齊了。"""
+    return getattr(config, f"{role.upper()}_PROVIDER") in config.KEY_FOR and missing(role) is None
+
+
+def summary() -> list[str]:
+    out = []
+    for role, label, none_hint in (
+            ("text", "腳本/賣點", "未選擇 → 不用 AI，用你填的賣點 + 範本"),
+            ("image", "產圖", "未選擇 → 你手動上傳"),
+            ("video", "AI 生成影片（類型 B）", "未選擇 → 只能用類型 A 圖片合成")):
+        p = getattr(config, f"{role.upper()}_PROVIDER")
+        if not p:
+            out.append(f"{label}：{none_hint}")
+        elif p in config.KEY_FOR:
+            m = missing(role)
+            out.append(f"{label}：{p} / {config.model_for(role)} ✅" if m is None else f"{label}：{p} ❌ {m}")
+        else:
+            out.append(f"{label}：{p}（不需 API）✅")
+    return out
 
 
 def _need(key_name: str) -> str:
@@ -34,6 +64,13 @@ def _need(key_name: str) -> str:
     if not v:
         raise NotConfigured(f"尚未設定 {key_name}（到網頁「設定」頁填寫）")
     return v
+
+
+def _model(role: str) -> str:
+    m = config.model_for(role)
+    if not m:
+        raise NotConfigured(f"尚未選擇{ROLE_NAMES[role]}模型（設定頁）")
+    return m
 
 
 def _gemini():
@@ -46,6 +83,10 @@ def _openai():
     from openai import OpenAI
 
     return OpenAI(api_key=_need("OPENAI_API_KEY"), base_url=config.OPENAI_BASE_URL or None)
+
+
+def _mime(p: Path) -> str:
+    return {".png": "image/png", ".webp": "image/webp"}.get(p.suffix.lower(), "image/jpeg")
 
 
 def _b64(b: bytes) -> str:
@@ -64,7 +105,9 @@ def parse_json(text: str) -> dict:
 def text_json(prompt: str, images: list[bytes] | None = None) -> dict:
     images = images or []
     p = config.TEXT_PROVIDER
-    model = config.model_for("text")
+    if p not in ("gemini", "openai", "claude"):
+        raise NotConfigured("尚未選擇腳本 AI 服務")
+    model = _model("text")
     if p == "gemini":
         from google.genai import types
 
@@ -93,17 +136,22 @@ def text_json(prompt: str, images: list[bytes] | None = None) -> dict:
 # ---------------------------------------------------------------- 圖片
 def image_bytes(prompt: str, refs: list[Path]) -> bytes:
     p = config.IMAGE_PROVIDER
-    model = config.model_for("image")
+    if p not in ("gemini", "openai"):
+        raise NotConfigured("尚未選擇圖片 AI 服務")
+    model = _model("image")
     if p == "gemini":
         from google.genai import types
 
-        parts = [types.Part.from_bytes(data=r.read_bytes(), mime_type="image/jpeg") for r in refs]
+        parts = [types.Part.from_bytes(data=r.read_bytes(), mime_type=_mime(r)) for r in refs]
         resp = _gemini().models.generate_content(model=model, contents=[prompt, *parts])
         for part in resp.candidates[0].content.parts:
             if getattr(part, "inline_data", None) and part.inline_data.data:
                 return part.inline_data.data
         raise RuntimeError("Gemini 沒有回傳圖片（可能被安全過濾）")
     if p == "openai":
+        if not refs:
+            r = _openai().images.generate(model=model, prompt=prompt, size="1024x1536")
+            return base64.b64decode(r.data[0].b64_json)
         files = [open(r, "rb") for r in refs]
         try:
             r = _openai().images.edit(model=model, image=files, prompt=prompt, size="1024x1536")
@@ -117,7 +165,9 @@ def image_bytes(prompt: str, refs: list[Path]) -> bytes:
 # ---------------------------------------------------------------- 影片
 def video_clip(prompt: str, image_path: Path, out: Path) -> None:
     p = config.VIDEO_PROVIDER
-    model = config.model_for("video")
+    if p not in ("veo", "fal"):
+        raise NotConfigured("尚未選擇 AI 影片服務")
+    model = _model("video")
     if p == "veo":
         from google.genai import types
 
@@ -155,32 +205,33 @@ def video_clip(prompt: str, image_path: Path, out: Path) -> None:
 
 # ---------------------------------------------------------------- 連線測試
 def check(role: str) -> str:
-    """設定頁的『測試』按鈕。文字：極小請求；圖片：實際產 1 張（會計費）；影片：只檢查金鑰有填（避免誤燒錢）。"""
+    """設定頁的『測試』按鈕。文字：極小請求；圖片：實際產 1 張（會計費）；影片：只檢查 key/模型有填（避免誤燒錢）。"""
+    name = ROLE_NAMES[role]
+    p = getattr(config, f"{role.upper()}_PROVIDER")
     try:
+        if not p:
+            return f"ℹ️ {name}：尚未選擇服務"
+        if p not in config.KEY_FOR:
+            return f"✅ {name}：{p} 不需要 API"
+        m = missing(role)
+        if m:
+            return f"❌ {name}：{m}"
         if role == "text":
-            if config.TEXT_PROVIDER == "template":
-                return "✅ 腳本：不使用 AI（範本 + 你填的賣點）"
             r = text_json('回傳 JSON：{"ok": true}')
-            return f"✅ 腳本 {config.TEXT_PROVIDER}/{config.model_for('text')} 可用（{r}）"
+            return f"✅ 腳本 {p}/{config.model_for('text')} 可用（{r}）"
         if role == "image":
-            if config.IMAGE_PROVIDER in ("manual", "browser"):
-                return f"✅ 圖片：{config.IMAGE_PROVIDER} 模式不需 API"
-            from PIL import Image
             import io
+
+            from PIL import Image
 
             buf = io.BytesIO()
             Image.new("RGB", (256, 256), "white").save(buf, "JPEG")
             tmp = config.DATA_DIR / "_check.jpg"
+            tmp.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_bytes(buf.getvalue())
             data = image_bytes("a plain red apple, studio photo, no text", [tmp])
-            return f"✅ 圖片 {config.IMAGE_PROVIDER}/{config.model_for('image')} 可用（收到 {len(data)//1024} KB）"
-        if role == "video":
-            if config.VIDEO_PROVIDER == "veo":
-                _need("GEMINI_API_KEY")
-            elif config.VIDEO_PROVIDER == "fal":
-                _need("FAL_KEY")
-            return f"✅ 影片 {config.VIDEO_PROVIDER}：金鑰已填（為避免花錢，不實際產片測試）"
+            return f"✅ 圖片 {p}/{config.model_for('image')} 可用（收到 {len(data) // 1024} KB）"
+        return f"✅ AI 影片 {p}/{config.model_for('video')}：key 與模型已填（為避免花錢，不實際產片測試）"
     except Exception as e:  # noqa: BLE001
         msg = re.sub(r"\s+", " ", str(e))[:250]
-        return f"❌ {role} 失敗：{msg}"
-    return "?"
+        return f"❌ {name} 失敗：{msg}"

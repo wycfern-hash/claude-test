@@ -18,15 +18,16 @@ SELECTORS_PATH = Path("config/shopee_upload.json")
 # (名稱, 預設值, 型別)。網頁設定頁與 reload() 共用這份清單。
 SPEC = [
     # 腳本文案（LLM）
-    ("TEXT_PROVIDER", "auto", str),        # auto(依填的 key 自動決定) | gemini | openai | claude | template(不用 AI，吃你填的賣點)
-    ("TEXT_MODEL", "", str),               # 空白 = 該供應商預設
+    ("TEXT_PROVIDER", "", str),            # 空白=未選擇（不用 AI，吃你填的賣點）| gemini | openai | claude
+    ("TEXT_MODEL", "", str),               # 沒有預設，由使用者選/填
     # 圖片
-    ("IMAGE_PROVIDER", "auto", str),       # auto | gemini | openai | browser | manual
+    ("IMAGE_PROVIDER", "", str),           # 空白=未選擇（手動上傳）| gemini | openai | browser | manual
     ("IMAGE_MODEL", "", str),
+    ("DEFAULT_IMAGE_SOURCE", "web", str),  # 新商品預設圖片來源：web=上網找圖當參考(AI 重新生成) | ai=純 AI 生成(不需參考圖)；每個商品可單獨改
     ("IMAGES_PER_PRODUCT", 5, int),
     # 影片
     ("VIDEO_MODE", "slideshow", str),      # 預設影片類型：slideshow=5 張圖合成 | ai=用新圖+腳本讓 AI 生成（每個商品可在審圖頁單獨改）
-    ("VIDEO_PROVIDER", "auto", str),       # AI 影片引擎（VIDEO_MODE=ai 時用）：auto | veo | fal | flow_browser | flow
+    ("VIDEO_PROVIDER", "", str),           # 類型 B 的 AI 影片服務：空白=未選擇 | veo | fal | flow_browser | flow
     ("VIDEO_MODEL", "", str),
     ("VIDEO_CLIP_SECONDS", 0, int),        # 單段秒數，0 = 供應商預設（veo 8、fal 5）
     ("FAL_EXTRA_ARGS", "", str),           # fal 模型額外參數 JSON，例如 {"duration":"5"}
@@ -36,10 +37,13 @@ SPEC = [
     ("OPENAI_BASE_URL", "", str),          # 相容 OpenAI 的服務（如 DeepSeek）才需要
     ("ANTHROPIC_API_KEY", "", str),
     ("FAL_KEY", "", str),
+    # 主角（出鏡人物）
+    ("DEFAULT_CHARACTER_ID", 0, int),      # 新商品預設搭配的主角，0 = 不出現人物（每個商品可再單獨改）
     # 影片後製
     ("TTS", True, bool),
     ("TTS_VOICE", "zh-TW-HsiaoChenNeural", str),  # 曉臻
     ("SUBTITLES", True, bool),
+    ("AI_LABEL", True, bool),              # 影片左上角顯示「AI 生成」標示
     ("FONT_PATH", "", str),
     # 瀏覽器
     ("CDP_PORT", 9222, int),
@@ -58,15 +62,18 @@ SPEC = [
 ]
 SECRETS = {"GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FAL_KEY", "APP_PASSWORD"}
 
-DEFAULT_MODELS = {
-    ("text", "gemini"): "gemini-2.5-flash",
-    ("text", "openai"): "gpt-4.1-mini",
-    ("text", "claude"): "claude-haiku-4-5-20251001",
-    ("image", "gemini"): "gemini-2.5-flash-image",
-    ("image", "openai"): "gpt-image-1",
-    ("video", "veo"): "veo-3.1-generate-preview",
-    ("video", "fal"): "fal-ai/kling-video/v2.1/standard/image-to-video",
+# 設定頁「模型」欄的下拉建議（只是建議，沒有預設值；也可自己輸入任何模型名稱）
+MODEL_SUGGESTIONS = {
+    ("text", "gemini"): ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+    ("text", "openai"): ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"],
+    ("text", "claude"): ["claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"],
+    ("image", "gemini"): ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"],
+    ("image", "openai"): ["gpt-image-1"],
+    ("video", "veo"): ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.0-generate-001", "veo-3.0-fast-generate-001"],
+    ("video", "fal"): ["fal-ai/kling-video/v2.1/standard/image-to-video", "fal-ai/kling-video/v2.1/master/image-to-video"],
 }
+KEY_FOR = {"gemini": "GEMINI_API_KEY", "veo": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY",
+           "claude": "ANTHROPIC_API_KEY", "fal": "FAL_KEY"}
 DEFAULT_CLIP_SECONDS = {"veo": 8, "fal": 5}
 
 
@@ -83,32 +90,6 @@ def raw(name: str) -> str:
     return RAW.get(name, "")
 
 
-def _resolve_auto() -> None:
-    """供應商留「自動」時，依填了哪些 key 決定：Gemini > OpenAI > Claude/fal。沒 key 就退回不花錢的做法。"""
-    g = globals()
-    if g["TEXT_PROVIDER"] == "auto":
-        g["TEXT_PROVIDER"] = ("gemini" if g["GEMINI_API_KEY"] else "openai" if g["OPENAI_API_KEY"]
-                              else "claude" if g["ANTHROPIC_API_KEY"] else "template")
-    if g["IMAGE_PROVIDER"] == "auto":
-        g["IMAGE_PROVIDER"] = "gemini" if g["GEMINI_API_KEY"] else "openai" if g["OPENAI_API_KEY"] else "manual"
-    if g["VIDEO_PROVIDER"] == "auto":
-        g["VIDEO_PROVIDER"] = "veo" if g["GEMINI_API_KEY"] else "fal" if g["FAL_KEY"] else "veo"
-
-
-def summary() -> list[str]:
-    """設定頁最上面的『目前自動啟用了什麼』。"""
-    g = globals()
-    out = []
-    t = g["TEXT_PROVIDER"]
-    out.append("腳本/賣點：" + ("AI（" + t + "）自己生成" if t != "template" else "尚未填 key → 用你填的賣點 + 範本"))
-    i = g["IMAGE_PROVIDER"]
-    out.append("產圖：" + {"manual": "尚未填 key → 你手動上傳", "browser": "操控 Chrome 用 Gemini 網頁"}.get(i, f"AI（{i}）自動產"))
-    v = g["VIDEO_PROVIDER"]
-    has_video_key = (v == "veo" and bool(g["GEMINI_API_KEY"])) or (v == "fal" and bool(g["FAL_KEY"])) or v in ("flow", "flow_browser")
-    out.append("AI 生成影片（類型 B）：" + (f"可用（{v}）" if has_video_key else "尚無 → 需要 Gemini key（Veo）或 fal key；類型 A 圖片合成不需要"))
-    return out
-
-
 def reload() -> None:
     load_dotenv(ENV_PATH, override=True)
     g = globals()
@@ -117,17 +98,12 @@ def reload() -> None:
         raw_v = os.getenv(name)
         RAW[name] = str(default) if raw_v is None else raw_v
         g[name] = default if raw_v is None else _cast(raw_v, typ)
-    # 舊版相容：VIDEO_PROVIDER=slideshow 代表「圖片合成」模式；其他明確的引擎值且沒設 VIDEO_MODE 代表 AI 模式
-    if g["VIDEO_PROVIDER"] == "slideshow":
-        g["VIDEO_PROVIDER"] = "auto"
-        RAW["VIDEO_PROVIDER"] = "auto"
-        if os.getenv("VIDEO_MODE") is None:
-            g["VIDEO_MODE"] = "slideshow"
-    elif os.getenv("VIDEO_PROVIDER") not in (None, "", "auto") and os.getenv("VIDEO_MODE") is None:
-        g["VIDEO_MODE"] = "ai"
-    if g["IMAGE_PROVIDER"] == "api":  # 舊值
-        g["IMAGE_PROVIDER"] = RAW["IMAGE_PROVIDER"] = "auto"
-    _resolve_auto()
+    # 舊版值正規化：不再有 auto；VIDEO_PROVIDER=slideshow 代表「類型 A 圖片合成」
+    for k in ("TEXT_PROVIDER", "IMAGE_PROVIDER", "VIDEO_PROVIDER"):
+        if g[k] in ("auto", "api", "template", "slideshow"):
+            if g[k] == "slideshow" and os.getenv("VIDEO_MODE") is None:
+                g["VIDEO_MODE"] = "slideshow"
+            g[k] = RAW[k] = ""
 
 
 def save_env(updates: dict) -> None:
@@ -147,9 +123,8 @@ def save_env(updates: dict) -> None:
 
 
 def model_for(role: str) -> str:
-    """role: text | image | video。使用者有填就用，否則該供應商預設。"""
-    provider = globals()[f"{role.upper()}_PROVIDER"]
-    return globals()[f"{role.upper()}_MODEL"] or DEFAULT_MODELS.get((role, provider), "")
+    """role: text | image | video。沒有預設：使用者沒選就是空字串。"""
+    return globals()[f"{role.upper()}_MODEL"]
 
 
 def clip_seconds() -> int:

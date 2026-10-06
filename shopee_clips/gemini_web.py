@@ -6,8 +6,8 @@ import re
 import time
 from pathlib import Path
 
-from . import config, db
-from .imagegen import prompts_for, ref_files
+from . import characters, config, db
+from .imagegen import collect_refs, prompts_for, ready_for_gen, source_for
 from .webauto import fetch_in_page, img_srcs, rx, site, step, wait_new_image
 
 
@@ -53,7 +53,8 @@ def one_image(ctx, L, prompt: str, refs: list[Path], out: Path) -> None:
         page.wait_for_load_state("domcontentloaded")
         if "accounts.google.com" in page.url:
             raise RuntimeError("尚未登入 Google：請先在自動化專用 Chrome 登入（首頁按「開啟自動化 Chrome」）")
-        _attach(page, L, [str(p) for p in refs], t)
+        if refs:
+            _attach(page, L, [str(p) for p in refs], t)
 
         def type_prompt():
             box = page.get_by_role("textbox").first
@@ -71,13 +72,16 @@ def one_image(ctx, L, prompt: str, refs: list[Path], out: Path) -> None:
 
 def generate_images(ctx, row) -> list[str]:
     L = site("gemini")
-    refs = ref_files(row["id"])[:3]
-    if not refs:
-        raise RuntimeError("沒有參考圖（先讓程式補商品資料）")
+    refs = [] if source_for(row) == "ai" else collect_refs(row)
+    if source_for(row) == "web" and not refs:
+        raise RuntimeError("尚無參考圖：請到「待產圖」頁上網找圖，或改用 AI 生成")
+    char = characters.get(row)
+    if characters.portrait(char):
+        refs = [*refs, characters.portrait(char)]  # 主角形象照放最後一張，提示詞會要求同一個人
     d = config.IMG_DIR / str(row["id"])
     d.mkdir(parents=True, exist_ok=True)
     saved = []
-    for n, prompt in enumerate(prompts_for(row)):
+    for n, prompt in enumerate(prompts_for(row, char)):
         out = d / f"{n}.png"
         one_image(ctx, L, prompt, refs, out)
         saved.append(str(out.relative_to(config.DATA_DIR)))
@@ -88,7 +92,7 @@ def generate_images(ctx, row) -> list[str]:
 def run(conn, cap_left: int) -> int:
     from . import browser
 
-    rows = [r for r in db.by_status(conn, "sourced") if not r["error"].startswith("imagegen:")][:cap_left]
+    rows = [r for r in db.by_status(conn, "sourced") if not r["error"].startswith("imagegen:") and ready_for_gen(r)][:cap_left]
     if not rows:
         return 0
     n = 0

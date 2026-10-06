@@ -22,6 +22,11 @@ def env(tmp_path, monkeypatch):
     config.reload()
 
 
+GEMINI_ALL = {"GEMINI_API_KEY": "k", "TEXT_PROVIDER": "gemini", "TEXT_MODEL": "gemini-2.5-flash",
+              "IMAGE_PROVIDER": "gemini", "IMAGE_MODEL": "gemini-2.5-flash-image",
+              "VIDEO_PROVIDER": "veo", "VIDEO_MODEL": "veo-3.1-generate-preview"}
+
+
 def test_parse_json_tolerant():
     assert providers.parse_json('好的：\n```json\n{"a": 1}\n```') == {"a": 1}
     with pytest.raises(RuntimeError):
@@ -32,16 +37,16 @@ def test_settings_save_and_mask():
     from shopee_clips.web import app
 
     c = TestClient(app)
-    r = c.post("/settings", data={"TEXT_PROVIDER": "openai", "OPENAI_API_KEY": "sk-secret-1234",
-                                  "IMAGES_PER_PRODUCT": "abc", "TTS": "0", "TEXT_MODEL": "x\nEVIL=1"},
+    r = c.post("/settings", data={"TEXT_PROVIDER": "openai", "TEXT_MODEL": "gpt-4.1-mini", "key_text": "sk-secret-1234",
+                                  "IMAGES_PER_PRODUCT": "abc", "TTS": "0", "IMAGE_MODEL": "x\nEVIL=1"},
                follow_redirects=False)
     assert r.status_code == 303
-    assert config.TEXT_PROVIDER == "openai" and config.OPENAI_API_KEY == "sk-secret-1234"
-    assert config.IMAGES_PER_PRODUCT == 5 and config.TTS is False          # 非法數字被忽略
+    assert config.TEXT_PROVIDER == "openai" and config.OPENAI_API_KEY == "sk-secret-1234"   # key 存到「選的那一家」
+    assert config.IMAGES_PER_PRODUCT == 5 and config.TTS is False                           # 非法數字被忽略
     assert not any(ln.startswith("EVIL") for ln in config.ENV_PATH.read_text().splitlines())   # 換行不能夾帶新設定
     page = c.get("/settings").text
-    assert "sk-secret-1234" not in page and "…1234" in page                # 網頁不回傳金鑰
-    c.post("/settings", data={"OPENAI_API_KEY": ""})                        # 留空 = 不變更
+    assert "sk-secret-1234" not in page and "…1234" in page                                 # 網頁不回傳金鑰
+    c.post("/settings", data={"TEXT_PROVIDER": "openai", "key_text": ""})                   # 留空 = 不變更
     assert config.OPENAI_API_KEY == "sk-secret-1234"
 
 
@@ -55,15 +60,28 @@ def test_password_gate():
     assert c.get("/", auth=("me", "pw123")).status_code == 200
 
 
-def test_configured_and_models():
-    assert not providers.configured("image")
+def test_nothing_is_preselected():
+    """沒有任何預設的服務或模型；只填 key 不會啟用任何東西。"""
+    assert [config.TEXT_PROVIDER, config.IMAGE_PROVIDER, config.VIDEO_PROVIDER] == ["", "", ""]
+    assert [config.TEXT_MODEL, config.IMAGE_MODEL, config.VIDEO_MODEL] == ["", "", ""]
     config.save_env({"GEMINI_API_KEY": "k"})
-    assert providers.configured("image") and providers.configured("text") and providers.configured("video")  # 一支 Gemini key：腳本+圖片+Veo
-    config.save_env({"VIDEO_PROVIDER": "fal"})
-    assert not providers.configured("video")                                                                   # fal 要另外的 key
-    assert config.model_for("image") == "gemini-2.5-flash-image"
-    config.save_env({"VIDEO_PROVIDER": "fal", "FAL_KEY": "f"})
-    assert providers.configured("video") and "kling" in config.model_for("video") and config.clip_seconds() == 5
+    assert not any(providers.configured(r) for r in ("text", "image", "video"))
+    assert all("未選擇" in x for x in providers.summary())
+
+
+def test_configured_requires_service_key_and_model():
+    config.save_env({"TEXT_PROVIDER": "gemini"})
+    assert providers.missing("text") == "尚未填 gemini 的 API key"
+    config.save_env({"GEMINI_API_KEY": "k"})
+    assert providers.missing("text") == "尚未選擇模型" and not providers.configured("text")
+    config.save_env({"TEXT_MODEL": "gemini-2.5-flash"})
+    assert providers.configured("text")
+    config.save_env({"VIDEO_PROVIDER": "fal", "VIDEO_MODEL": "m"})
+    assert providers.missing("video") == "尚未填 fal 的 API key" and config.clip_seconds() == 5
+    config.save_env({"FAL_KEY": "f"})
+    assert providers.configured("video")
+    config.save_env({"IMAGE_PROVIDER": "browser"})
+    assert providers.missing("image") is None and not providers.configured("image")   # 不需 API，也不走 API 流程
 
 
 def _row(conn, **kw):
@@ -81,7 +99,7 @@ def test_api_image_then_video_pipeline(monkeypatch):
 
     if not shutil.which("ffmpeg"):
         pytest.skip("no ffmpeg")
-    config.save_env({"GEMINI_API_KEY": "k", "TTS": "0", "IMAGES_PER_PRODUCT": "3", "VIDEO_MODE": "ai", "VIDEO_PROVIDER": "veo"})
+    config.save_env(GEMINI_ALL | {"TTS": "0", "IMAGES_PER_PRODUCT": "3", "VIDEO_MODE": "ai"})
     with db.connect() as conn:
         pid = _row(conn, ref_images='["http://x/0.jpg"]')
     ref = config.REF_DIR / str(pid)
@@ -124,7 +142,7 @@ def test_api_image_then_video_pipeline(monkeypatch):
 def test_llm_script_and_fallback(monkeypatch):
     from shopee_clips import scriptgen
 
-    config.save_env({"GEMINI_API_KEY": "k", "VIDEO_MODE": "ai", "VIDEO_PROVIDER": "fal", "FAL_KEY": "f"})
+    config.save_env(GEMINI_ALL | {"VIDEO_MODE": "ai", "VIDEO_PROVIDER": "fal", "VIDEO_MODEL": "fal-ai/x", "FAL_KEY": "f"})
     with db.connect() as conn:
         pid = _row(conn)
         got = {}
@@ -159,7 +177,7 @@ def test_openai_and_claude_payloads(monkeypatch):
                     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": 1}'))])
 
     monkeypatch.setattr(providers, "_openai", lambda: FakeOpenAI)
-    config.save_env({"TEXT_PROVIDER": "openai"})
+    config.save_env({"TEXT_PROVIDER": "openai", "TEXT_MODEL": "gpt-4.1-mini"})
     assert providers.text_json("hi", [b"img"]) == {"ok": 1}
     c = captured["openai"]["messages"][0]["content"]
     assert c[1]["image_url"]["url"].startswith("data:image/jpeg;base64,") and captured["openai"]["model"] == "gpt-4.1-mini"
@@ -174,15 +192,15 @@ def test_openai_and_claude_payloads(monkeypatch):
 
     import sys
     monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=FakeAnthropic))
-    config.save_env({"TEXT_PROVIDER": "claude", "ANTHROPIC_API_KEY": "k"})
+    config.save_env({"TEXT_PROVIDER": "claude", "TEXT_MODEL": "claude-haiku-4-5-20251001", "ANTHROPIC_API_KEY": "k"})
     assert providers.text_json("hi", [b"img"]) == {"ok": 2}
     assert captured["claude"]["messages"][0]["content"][0]["type"] == "image"
 
 
-def test_check_reports_missing_key():
-    assert "不使用 AI" in providers.check("text")     # 沒填任何 key → 範本模式
+def test_check_reports_state():
+    assert "尚未選擇服務" in providers.check("text")
     config.save_env({"TEXT_PROVIDER": "gemini"})
-    assert "❌" in providers.check("text")           # 明確指定 gemini 但沒 key
+    assert "❌" in providers.check("text") and "API key" in providers.check("text")
     config.save_env({"VIDEO_PROVIDER": "flow"})
     assert "✅" in providers.check("video")
 
@@ -209,7 +227,7 @@ def test_two_video_modes_side_by_side(monkeypatch):
 
     if not shutil.which("ffmpeg"):
         pytest.skip("no ffmpeg")
-    config.save_env({"GEMINI_API_KEY": "k", "TTS": "0", "VIDEO_PROVIDER": "veo", "DAILY_GEN_CAP": "1"})
+    config.save_env(GEMINI_ALL | {"TTS": "0", "DAILY_GEN_CAP": "1"})
     ai_calls = []
 
     def fake_clip(prompt, image_path, out):
@@ -264,50 +282,42 @@ def test_web_saves_video_mode_per_product():
         assert db.get(conn, pid)["video_mode"] == "ai"
 
 
-def test_legacy_video_provider_env(monkeypatch):
-    monkeypatch.setenv("VIDEO_PROVIDER", "slideshow")
-    config.reload()
-    assert (config.VIDEO_MODE, config.VIDEO_PROVIDER) == ("slideshow", "veo")
-    monkeypatch.setenv("VIDEO_PROVIDER", "fal")
-    config.reload()
-    assert (config.VIDEO_MODE, config.VIDEO_PROVIDER) == ("ai", "fal")
-    monkeypatch.setenv("VIDEO_MODE", "slideshow")
-    config.reload()
-    assert config.VIDEO_MODE == "slideshow"
-
-
-def test_auto_detect_from_keys():
-    """只要填 key 就自動啟用，不必選供應商。"""
-    assert (config.TEXT_PROVIDER, config.IMAGE_PROVIDER) == ("template", "manual")
-    config.save_env({"OPENAI_API_KEY": "o"})
-    assert (config.TEXT_PROVIDER, config.IMAGE_PROVIDER) == ("openai", "openai")
-    assert not providers.configured("video")                          # OpenAI 沒有影片引擎
-    config.save_env({"ANTHROPIC_API_KEY": "a"})
-    assert config.TEXT_PROVIDER == "openai"                           # 優先序 Gemini > OpenAI > Claude
-    config.save_env({"GEMINI_API_KEY": "g"})
-    assert (config.TEXT_PROVIDER, config.IMAGE_PROVIDER, config.VIDEO_PROVIDER) == ("gemini", "gemini", "veo")
-    assert providers.configured("video")                              # 一支 Gemini key：腳本+圖+Veo
-    config.save_env({"GEMINI_API_KEY": "", "OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": "", "FAL_KEY": "f"})
-    assert config.VIDEO_PROVIDER == "fal" and providers.configured("video")
-    config.save_env({"FAL_KEY": "", "TEXT_PROVIDER": "claude", "ANTHROPIC_API_KEY": "a"})   # 明確指定仍然優先
-    assert config.TEXT_PROVIDER == "claude"
-
-
-def test_settings_page_leads_with_keys_and_keeps_auto():
+def test_settings_page_per_role_dropdown_model_and_key():
     from shopee_clips.web import app
 
     c = TestClient(app)
     html = c.get("/settings").text
-    assert html.index("填入 API key") < html.index("進階") and "<details" in html      # key 在最前，供應商選項收在進階
-    c.post("/settings", data={"GEMINI_API_KEY": "g-key-9999"})                        # 只填 key
-    assert config.TEXT_PROVIDER == "gemini" and config.RAW["TEXT_PROVIDER"] == "auto"
+    assert "依填的 key" not in html                                               # 沒有「依 key 自動判斷」
+    for role, pf in (("text", "TEXT_PROVIDER"), ("image", "IMAGE_PROVIDER"), ("video", "VIDEO_PROVIDER")):
+        assert f"<select name={pf} id=sel_{role}>" in html and f"name=key_{role}" in html and f"name={role.upper()}_MODEL" in html
+        sel = html[html.index(f"<select name={pf}"):]
+        assert 'value="auto"' not in sel[: sel.index("</select>")]
+        assert sel[sel.index("<option"):].startswith('<option value="" selected>— 請選擇 —')   # 一開始什麼都沒選
+    # 腳本選 Gemini、圖片選 OpenAI：各填各的 key，互不影響
+    c.post("/settings", data={"TEXT_PROVIDER": "gemini", "TEXT_MODEL": "gemini-2.5-flash", "key_text": "g-key-9999",
+                              "IMAGE_PROVIDER": "openai", "IMAGE_MODEL": "gpt-image-1", "key_image": "o-key-8888"})
+    assert (config.GEMINI_API_KEY, config.OPENAI_API_KEY) == ("g-key-9999", "o-key-8888")
+    assert providers.configured("text") and providers.configured("image") and not providers.configured("video")
     html = c.get("/settings").text
-    assert "g-key-9999" not in html and "…9999" in html
-    assert 'value="auto" selected' in html                                            # 儲存後仍是「自動」，沒被解析值覆蓋
-    c.post("/settings", data={"TEXT_PROVIDER": "auto", "GEMINI_API_KEY": ""})
-    assert config.GEMINI_API_KEY == "g-key-9999"
+    assert "g-key-9999" not in html and "o-key-8888" not in html and "…9999" in html and "…8888" in html
+    c.post("/settings", data={"TEXT_PROVIDER": "gemini", "key_text": "", "IMAGE_PROVIDER": "openai", "key_image": ""})
+    assert config.GEMINI_API_KEY == "g-key-9999"                                  # 留空不變更
+    c.post("/settings", data={"TEXT_PROVIDER": "", "TEXT_MODEL": ""})             # 改回不選 → 不再用 AI
+    assert not providers.configured("text")
 
 
-def test_auto_provider_env_does_not_flip_video_mode():
-    config.save_env({"VIDEO_PROVIDER": "auto"})
-    assert config.VIDEO_MODE == "slideshow"                           # 'auto' 不應被當成舊版「AI 模式」訊號
+def test_key_for_no_key_provider_is_ignored():
+    from shopee_clips.web import app
+
+    TestClient(app).post("/settings", data={"IMAGE_PROVIDER": "manual", "key_image": "should-not-be-saved"})
+    assert not any(getattr(config, k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FAL_KEY"))
+
+
+def test_legacy_env_values_normalise(monkeypatch):
+    monkeypatch.setenv("VIDEO_PROVIDER", "slideshow")
+    config.reload()
+    assert (config.VIDEO_MODE, config.VIDEO_PROVIDER) == ("slideshow", "")
+    monkeypatch.setenv("VIDEO_PROVIDER", "auto")
+    monkeypatch.setenv("TEXT_PROVIDER", "auto")
+    config.reload()
+    assert config.VIDEO_PROVIDER == "" and config.TEXT_PROVIDER == ""

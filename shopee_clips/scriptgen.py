@@ -5,7 +5,7 @@ import json
 import math
 import re
 
-from . import config, providers
+from . import characters, config, providers
 
 PROMPT = """你是台灣蝦皮短影音的文案。根據下列商品資訊（以及附圖中看得到的商品），自己歸納 3 個最吸引人的賣點，寫一支 15 秒開箱短影音腳本，輸出 JSON。
 限制：
@@ -50,6 +50,8 @@ def from_template(row) -> dict:
     title = row["title"][:14]
     hook, cta = f"開箱{title}！", "喜歡的話點下方商品連結"
     t = row["title"]
+    char = characters.get(row)
+    who = f"{char['description']}. " if char else ""
     return {
         "hook": hook, "selling_points": pts, "cta": cta,
         "voiceover": "，".join([hook, *pts, cta]),
@@ -57,9 +59,9 @@ def from_template(row) -> dict:
         "caption": f"{hook} " + " ".join(f"✔{p}" for p in pts) + f" {cta}",
         "hashtags": ["蝦皮", "好物推薦", "開箱"],
         "video_prompts": [
-            f"Vertical 9:16 product video: hands unboxing {t} on a clean table, soft natural light, slow camera push-in, no text overlays.",
-            f"Vertical 9:16 close-up details and everyday use of {t}, smooth handheld camera, warm light, no text overlays.",
-            f"Vertical 9:16 hero shot of {t} on a gradient studio background, slow rotation, no text overlays.",
+            f"Vertical 9:16 product video: {who}unboxing {t} on a clean table, soft natural light, slow camera push-in, no text overlays.",
+            f"Vertical 9:16 {who}close-up details and everyday use of {t}, smooth handheld camera, warm light, no text overlays.",
+            f"Vertical 9:16 hero shot of {t}{(' held by ' + char['description']) if char else ''} on a gradient studio background, slow rotation, no text overlays.",
         ],
     }
 
@@ -70,6 +72,7 @@ def from_llm(row, mode: str = "slideshow") -> dict:
     n = clips_needed()
     with_video = mode == "ai"
     extra = f"- video_prompts：{n} 個給影片模型的英文畫面描述（鏡頭、動作、光線），依序延續同一商品與場景，不要疊字。\n" if with_video else ""
+    extra += characters.video_block(characters.get(row))
     prompt = PROMPT.format(
         extra=extra, extra_fields=", video_prompts(字串陣列)" if with_video else "",
         title=row["title"], price=row["price"], description=row["description"][:1500],
@@ -88,7 +91,7 @@ def get_script(row, mode: str = "slideshow") -> dict:
         cur = {}
     if cur.get("video_title") and (mode != "ai" or cur.get("video_prompts") or cur.get("video_prompt_1")):
         return cur
-    if config.TEXT_PROVIDER != "template" and providers.configured("text"):
+    if providers.configured("text"):
         try:
             s = from_llm(row, mode)
         except Exception:  # noqa: BLE001  額度用完等 → 有賣點可用就退回範本，否則把錯誤丟出來

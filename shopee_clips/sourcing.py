@@ -42,6 +42,8 @@ ALIASES = {
     "url": ["商品連結", "商品網址", "商品鏈接", "分潤連結", "推廣連結", "連結", "網址", "url", "link", "product link", "product_url"],
     "title": ["商品名稱", "商品標題", "名稱", "標題", "品名", "title", "name", "product name"],
     "price": ["價格", "售價", "price"],
+    "char": ["主角", "角色", "人物", "presenter", "character"],
+    "src": ["圖片來源", "image source"],
     "p1": ["賣點1", "賣點一", "賣點 1", "selling point 1"],
     "p2": ["賣點2", "賣點二", "賣點 2", "selling point 2"],
     "p3": ["賣點3", "賣點三", "賣點 3", "selling point 3"],
@@ -104,6 +106,11 @@ def import_excel(conn, path: str) -> dict:
                 res["dup"] += 1
                 continue
             res["added"] += 1
+            by_name = {c["name"]: c["id"] for c in db.list_characters(conn)}
+            if get("char") in by_name:  # 「主角」欄填的名稱對得上，就套用
+                db.update(conn, pid, character_id=by_name[get("char")])
+            if get("src") in ("web", "ai", "上網找", "AI 生成", "AI"):
+                db.update(conn, pid, image_source="ai" if "AI" in get("src") or get("src") == "ai" else "web")
             pts = [get(k) for k in ("p1", "p2", "p3") if get(k)]
             if pts:
                 db.update(conn, pid, script=json.dumps({"user_points": pts}, ensure_ascii=False))
@@ -135,11 +142,20 @@ def fetch_picks(conn, limit: int = 30) -> tuple[int, int]:
     return import_urls(conn, urls)
 
 
+def needs_enrich(r) -> bool:
+    """要不要去商品頁補資料。試過就不再重試（避免每分鐘重開瀏覽器）；純 AI 生成且已有標題的商品不需要。"""
+    if r["error"].startswith("enrich"):
+        return False
+    if r["title"] and (r["image_source"] or config.DEFAULT_IMAGE_SOURCE) == "ai":
+        return False
+    return not r["title"] or r["ref_images"] == "[]"
+
+
 def enrich(conn) -> int:
     """替只有網址的商品補標題/價格/參考圖（讀商品頁 og meta + JSON-LD）。"""
     from . import browser
 
-    rows = [r for r in db.by_status(conn, "sourced") if not r["title"] or r["ref_images"] == "[]"]
+    rows = [r for r in db.by_status(conn, "sourced") if needs_enrich(r)]
     if not rows:
         return 0
     n = 0
@@ -156,7 +172,8 @@ def enrich(conn) -> int:
             db.update(
                 conn, r["id"],
                 title=info["title"] or r["title"], price=info["price"] or r["price"],
-                description=info["description"], ref_images=json.dumps(info["images"][:4]), error="",
+                description=info["description"], ref_images=json.dumps(info["images"][:4]),
+                error="" if info["images"] else "enrich: 商品頁沒抓到圖片（請「上網找圖」或改用純 AI 生成）",
             )
             n += 1
         page.close()
