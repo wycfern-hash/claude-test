@@ -101,11 +101,15 @@ def test_auto_run_toggle_and_gate(monkeypatch):
     assert called == [("vid", False), ("up", "manual")]                                   # 沒按開始：不產圖、不產 AI 影片、不操作手機
     called.clear()
     c.post("/auto-run", data={"on": "1"})
-    assert config.AUTO_RUN and "已開始自動處理" in c.get("/").text
+    page = c.get("/").text
+    assert config.AUTO_RUN and "圖片 AI」還沒設定好" in page and "步驟 ①" in page           # 沒設定 AI 就按開始：會明講為什麼不會產圖
     worker.tick()
     assert called == ["img", ("vid", True), ("up", None)]
     c.post("/auto-run", data={"on": "0"})
     assert not config.AUTO_RUN and "已暫停" in c.get("/").text
+    config.save_env({"GEMINI_API_KEY": "k", "IMAGE_PROVIDER": "gemini", "IMAGE_MODEL": "m"})
+    c.post("/auto-run", data={"on": "1"})
+    assert "已開始自動處理" in c.get("/").text                                              # 設定好了：正常開始
 
 
 def test_enrich_does_not_open_chrome_unless_enabled(monkeypatch):
