@@ -33,11 +33,15 @@
 ### 你的 Gemini key 能不能用？
 首頁按「檢查 Gemini key 能不能用」，會各測一次文字與產圖，結果顯示在執行紀錄。免費 key 通常文字可用；產圖不一定。
 
-## 開始
-1. `cp .env.example .env`（全免費模式不用改任何東西）。
-2. `./start.sh`（Windows 點 `start.bat`），電腦開 `http://localhost:8000`，手機同 Wi-Fi 開終端機印出的網址。需要先裝 Python 3.11+ 與 ffmpeg。
-3. 網頁按「開瀏覽器登入蝦皮」，手動登入（分潤後台＋短影音後台），登入完關掉視窗。帳密不會被程式儲存，只留瀏覽器 session 在 `data/browser_profile`。
-4. 貼商品連結（一行一個）→「待產圖」頁拿參考圖與提示詞去 Gemini 產圖並上傳 → 程式自動合成影片 →「審片」核准 →「上架包」頁（或自動上架）。
+## 開始（Windows）
+1. 安裝 [Python 3.11+](https://www.python.org/downloads/)（安裝時勾 **Add python.exe to PATH**）、Google Chrome、ffmpeg（命令列執行 `winget install ffmpeg`）。
+2. 下載這個專案（GitHub → Code → Download ZIP）並解壓縮。
+3. 編輯 `.env.example` 另存成 `.env`（沒有的話第一次啟動會自動複製）。要自動產圖/產片請設 `IMAGE_PROVIDER=browser`、`VIDEO_PROVIDER=flow_browser`。
+4. 雙擊 `start.bat`。第一次會自動安裝套件，之後秒開。黑色視窗是程式本體，**要開著**，關掉就停。
+5. 瀏覽器開 `http://localhost:8000`（手機同 Wi-Fi 開視窗裡印出的網址）。
+6. 首頁「開啟自動化 Chrome」→ 在跳出的 Chrome 登入 Google 與蝦皮 →「匯入 Excel」→ 之後到「審圖」「審片」「上架包」頁操作。
+
+（Mac/Linux 用 `./start.sh`。）
 
 ## 規則
 - 賣家圖只當 AI 參考輸入，存在 `data/ref`，**不會上傳、不會進影片**；輸出必須是全新構圖。
