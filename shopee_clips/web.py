@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import base64
 import secrets
 import shutil
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -58,8 +59,8 @@ def home():
     errs = "".join(f'<div class=err>#{r["id"]} {e(r["title"][:20])}：{e(r["error"])}</div>' for r in failed)
     return page(f"""<h2>蝦皮分潤短影音</h2><div class=card>{e(stats) or '尚無商品'}</div>
 <div class=card>{e(cfg)}<br><a href="/settings">→ 到設定頁選擇服務並填 API key</a></div>
-<form method=post action=/import-excel enctype=multipart/form-data class=card><b>匯入 Excel 選品（.xlsx）</b><br>
-表頭請含「商品連結」，可選：商品名稱、價格、賣點1~3<input type=file name=file accept=".xlsx"><button>匯入</button></form>
+<form method=post action=/import-file enctype=multipart/form-data class=card><b>匯入選品檔（蝦皮分潤後台下載的 .csv，或 .xlsx）</b><br>
+自動辨識欄位：商品連結（或分潤連結／商品ID+店鋪ID）必填；商品名稱、價格、圖片連結、賣點1~3 選填<input type=file name=file accept=".csv,.xlsx,.xlsm,.tsv,.txt"><button>匯入</button></form>
 <form method=post action=/apply-defaults class=card><b>批次：套用到所有尚未產圖的商品</b>
 <label>圖片來源<select name=image_source><option value="">不變更</option><option value=web>上網找圖當參考（AI 重新生成）</option><option value=ai>純 AI 生成（找不到圖時用）</option></select></label>
 <label>搭配主角<select name=character_id><option value=keep>不變更</option>{_char_options(-1, "不加人物")}</select></label><button class=g>套用</button></form>
@@ -98,22 +99,24 @@ def _bg(name, fn):
     threading.Thread(target=run, daemon=True).start()
 
 
-@app.post("/import-excel")
-def import_excel(file: UploadFile = File(...)):
+@app.post("/import-file")
+@app.post("/import-excel")  # 舊路徑，相容
+def import_file(file: UploadFile = File(...)):
     inbox = config.DATA_DIR / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
-    path = inbox / (time.strftime("%m%d_%H%M%S_") + "選品.xlsx")
+    suffix = Path(file.filename or "").suffix.lower() or ".csv"
+    path = inbox / (time.strftime("%m%d_%H%M%S_") + "選品" + suffix)
     path.write_bytes(file.file.read())
 
     def run():  # 短連結要逐一展開，100 筆可能要一兩分鐘，放背景做
         try:
             with db.connect() as conn:
-                r = sourcing.import_excel(conn, str(path))
-            worker.say(f"Excel 匯入：新增 {r['added']}、重複 {r['dup']}、失敗 {len(r['failed'])}")
+                r = sourcing.import_file(conn, str(path))
+            worker.say(f"匯入 {file.filename}：新增 {r['added']}、重複 {r['dup']}、失敗 {len(r['failed'])}")
             for where, why in r["failed"][:10]:
                 worker.say(f"  ✗ {where}：{why}")
         except Exception as ex:  # noqa: BLE001
-            worker.say(f"Excel 匯入失敗：{ex}")
+            worker.say(f"匯入失敗：{ex}")
 
     threading.Thread(target=run, daemon=True).start()
     return back()

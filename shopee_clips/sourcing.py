@@ -1,11 +1,13 @@
 """選品：不用蝦皮 API。三種進件方式：
-  1. add / import-csv：你手動貼商品連結（最穩）
+  1. 匯入蝦皮分潤後台下載的 CSV（或 Excel）／手動貼商品連結（最穩）
   2. fetch-picks：用 Playwright 開你已登入的分潤後台選品頁，抓頁面上的商品連結
 商品詳情（標題、價格、圖片）從商品頁的 og meta / JSON-LD 讀，不依賴會改版的 CSS class。
 """
 import csv
+import io
 import json
 import re
+from pathlib import Path
 from urllib.parse import unquote
 
 import httpx
@@ -28,20 +30,16 @@ def import_urls(conn, urls) -> tuple[int, int]:
     return added, dup
 
 
-def import_csv(conn, path: str) -> tuple[int, int]:
-    """CSV 欄位：url 必填；title/price 選填。"""
-    added = dup = 0
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            pid = db.add_product(conn, row["url"].strip(), row.get("title", ""), row.get("price", ""))
-            added, dup = (added + 1, dup) if pid else (added, dup + 1)
-    return added, dup
-
-
 ALIASES = {
-    "url": ["商品連結", "商品網址", "商品鏈接", "分潤連結", "推廣連結", "連結", "網址", "url", "link", "product link", "product_url"],
-    "title": ["商品名稱", "商品標題", "名稱", "標題", "品名", "title", "name", "product name"],
-    "price": ["價格", "售價", "price"],
+    "url": ["商品連結", "商品網址", "商品鏈接", "商品頁連結", "商品頁網址", "連結", "網址", "url", "link", "product link", "product url",
+            "product_url", "item url"],
+    "aff": ["分潤連結", "推廣連結", "聯盟連結", "推廣短連結", "短連結", "短網址", "affiliate link", "offer link", "affiliate url", "tracking link"],
+    "title": ["商品名稱", "商品標題", "名稱", "標題", "品名", "title", "name", "product name", "item name"],
+    "price": ["價格", "售價", "商品價格", "price"],
+    "desc": ["商品描述", "商品說明", "描述", "簡介", "description"],
+    "img": ["商品圖片", "商品圖", "圖片", "圖片連結", "圖片網址", "主圖", "封面", "image", "image url", "image_url", "image link", "picture"],
+    "item": ["商品id", "商品編號", "item id", "itemid", "item_id", "product id", "productid"],
+    "shop": ["店鋪id", "商店id", "賣場id", "店鋪編號", "shop id", "shopid", "shop_id", "seller id"],
     "char": ["主角", "角色", "人物", "presenter", "character"],
     "src": ["圖片來源", "image source"],
     "p1": ["賣點1", "賣點一", "賣點 1", "selling point 1"],
@@ -49,6 +47,7 @@ ALIASES = {
     "p3": ["賣點3", "賣點三", "賣點 3", "selling point 3"],
 }
 SHORT_HOSTS = ("s.shopee.tw", "shp.ee", "shope.ee", "vn.shp.ee", "s.shopee.com")
+Cell = tuple  # (顯示文字, 超連結目標)；CSV 沒有超連結，目標為空字串
 
 
 def expand_short(url: str) -> str:
@@ -57,65 +56,185 @@ def expand_short(url: str) -> str:
     return unquote(str(r.url))
 
 
+def _norm(h) -> str:
+    h = re.sub(r"[（(].*?[）)]", "", str(h or "")).lower()  # 「商品名稱(必填)」→「商品名稱」
+    return re.sub(r"[\s_\-:：*＊]+", "", h)
+
+
 def _find_cols(header: list) -> dict:
-    cols = {}
-    for i, h in enumerate(header):
-        h = str(h or "").strip().lower()
+    """先精確比對表頭；再用「含有」比對（只限含中文且 4 字以上的別名，避免 shop name 被當成 name）。"""
+    norm = [_norm(h) for h in header]
+    cols: dict = {}
+    for exact in (True, False):
         for key, names in ALIASES.items():
-            if key not in cols and h in [n.lower() for n in names]:
-                cols[key] = i
+            if key in cols:
+                continue
+            ns = [_norm(n) for n in names if exact or (len(_norm(n)) >= 4 and re.search(r"[^\x00-\x7f]", n))]
+            for i, h in enumerate(norm):
+                if h and i not in cols.values() and ((h in ns) if exact else any(n in h for n in ns)):
+                    cols[key] = i
+                    break
     return cols
 
 
-def _cell_url(cell) -> str:
-    v = str(cell.value or "").strip()
-    if v.startswith("http"):
+def _url_of(cell: Cell) -> str:
+    v, link = (str(cell[0] or "").strip(), cell[1] or "")
+    if v.lower().startswith("http"):
         return v
-    if cell.hyperlink and cell.hyperlink.target:
-        return cell.hyperlink.target
+    m = re.search(r'HYPERLINK\(\s*"([^"]+)"', v, re.I)  # Excel 匯出的 =HYPERLINK("網址","文字")
+    if m:
+        return m.group(1)
+    if link:
+        return link
+    if re.fullmatch(r"(?:[\w-]+\.)+[a-z]{2,}/\S+", v, re.I) and ("shopee" in v or "shp.ee" in v):
+        return "https://" + v
     return ""
 
 
+def _num(v: str) -> str:
+    v = str(v or "").strip()
+    return v[:-2] if re.fullmatch(r"\d+\.0", v) else v
+
+
+def _has_link_source(cols: dict) -> bool:
+    return "url" in cols or "aff" in cols or ("item" in cols and "shop" in cols)
+
+
+def _guess_url_col(rows: list[list[Cell]], hdr_i: int) -> int | None:
+    """表頭認不得時，看內容：哪一欄多半是蝦皮連結。"""
+    width = max((len(r) for r in rows), default=0)
+    for c in range(width):
+        vals = [_url_of(r[c]) for r in rows[hdr_i + 1:] if c < len(r) and str(r[c][0] or "").strip()]
+        if vals and sum(1 for v in vals if "shopee" in v or any(h in v for h in SHORT_HOSTS)) / len(vals) >= 0.5:
+            return c
+    return None
+
+
+def import_table(conn, rows: list[list[Cell]], label: str = "") -> dict:
+    """匯入一張表（Excel 工作表或 CSV）。自動辨識表頭；支援商品連結 / 分潤連結 / 商品ID+店鋪ID；
+    也會用內容猜哪一欄是連結。回傳 {added, dup, failed:[(位置, 原因)]}。"""
+    res = {"added": 0, "dup": 0, "failed": []}
+    rows = [r for r in rows if any(str(c[0] or "").strip() or c[1] for c in r)]
+    where = f"{label} " if label else ""
+    hdr_i, cols = None, {}
+    for i, r in enumerate(rows[:10]):
+        c = _find_cols([x[0] for x in r])
+        if _has_link_source(c):
+            hdr_i, cols = i, c
+            break
+    if hdr_i is None and rows:  # 表頭認不得：第一列當表頭，用內容猜連結欄
+        c = _find_cols([x[0] for x in rows[0]])
+        guess = _guess_url_col(rows, 0)
+        if guess is not None:
+            hdr_i, cols = 0, {**c, "url": guess}
+    if hdr_i is None:
+        heads = "、".join(str(x[0]) for x in (rows[0] if rows else []) if str(x[0]).strip())[:200]
+        res["failed"].append((label or "檔案", f"找不到商品連結欄。你的檔案欄位是：{heads or '（空白）'}。請確認有「商品連結」（或「商品ID」+「店鋪ID」）欄位"))
+        return res
+    by_name = {c["name"]: c["id"] for c in db.list_characters(conn)}
+    for n, r in enumerate(rows[hdr_i + 1:], hdr_i + 2):
+        def cell(k):
+            return r[cols[k]] if k in cols and cols[k] < len(r) else ("", "")
+
+        def get(k):
+            return _num(cell(k)[0]) if k in ("item", "shop") else str(cell(k)[0] or "").strip()
+
+        purl, aurl = (_url_of(cell("url")) if "url" in cols else ""), (_url_of(cell("aff")) if "aff" in cols else "")
+        ids_url = f"https://shopee.tw/product/{get('shop')}/{get('item')}" if get("shop") and get("item") else ""
+        url = purl or aurl or ids_url
+        if not url:
+            res["failed"].append((f"{where}第{n}列", "這一列沒有商品連結（也沒有商品ID+店鋪ID）"))
+            continue
+        original = aurl or purl  # 上架標記商品時優先用分潤連結
+        try:
+            if db.shopee_key(url) is None and any(h in url for h in SHORT_HOSTS):
+                try:
+                    url = expand_short(url)
+                except Exception:  # noqa: BLE001
+                    if not ids_url:
+                        raise
+                    url = ids_url
+            imgs = [u for u in re.split(r"[\s,;|]+", get("img")) if u.startswith("http")][:6]
+            pid = db.add_product(conn, url, title=get("title"), price=get("price"), description=get("desc"),
+                                 ref_images=imgs, source_url=original)
+        except Exception as e:  # noqa: BLE001
+            res["failed"].append((f"{where}第{n}列", str(e)[:120]))
+            continue
+        if pid is None:
+            res["dup"] += 1
+            continue
+        res["added"] += 1
+        if get("char") in by_name:  # 「主角」欄填的名稱對得上，就套用
+            db.update(conn, pid, character_id=by_name[get("char")])
+        if get("src") in ("web", "ai", "上網找", "AI 生成", "AI"):
+            db.update(conn, pid, image_source="ai" if "AI" in get("src") or get("src") == "ai" else "web")
+        pts = [get(k) for k in ("p1", "p2", "p3") if get(k)]
+        if pts:
+            db.update(conn, pid, script=json.dumps({"user_points": pts}, ensure_ascii=False))
+    return res
+
+
+def _merge(total: dict, part: dict) -> dict:
+    total["added"] += part["added"]
+    total["dup"] += part["dup"]
+    total["failed"] += part["failed"]
+    return total
+
+
+def decode_text(b: bytes) -> str:
+    """蝦皮/Excel 匯出的 CSV 可能是 UTF-8（含 BOM）、UTF-16、或繁中 Big5(cp950)。"""
+    if b.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return b.decode("utf-16")
+    for enc in ("utf-8-sig", "cp950", "gb18030"):
+        try:
+            return b.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return b.decode("utf-8", errors="replace")
+
+
+def read_csv(path: str) -> list[list[Cell]]:
+    text = decode_text(Path(path).read_bytes())
+    lines = text.splitlines()
+    if lines and lines[0].lower().startswith("sep=") and len(lines[0]) <= 6:  # Excel 的 sep=, 第一行
+        text, lines = "\n".join(lines[1:]), lines[1:]
+    sample = "\n".join(lines[:20])
+    try:
+        delim = csv.Sniffer().sniff(sample, delimiters=",\t;|").delimiter
+    except csv.Error:
+        first = lines[0] if lines else ""
+        delim = max(",\t;|", key=first.count)
+    return [[(c, "") for c in row] for row in csv.reader(io.StringIO(text), delimiter=delim)]
+
+
+def import_csv(conn, path: str) -> dict:
+    """匯入 CSV（蝦皮分潤後台下載的檔案）。回傳 {added, dup, failed}。"""
+    return import_table(conn, read_csv(path))
+
+
 def import_excel(conn, path: str) -> dict:
-    """匯入 Excel（.xlsx）。自動辨識表頭（商品連結/商品名稱/價格/賣點1~3 等），商品連結欄必填；
-    支援文字網址、超連結儲存格、分潤短連結。回傳 {added, dup, failed:[(列號, 原因)]}。"""
+    """匯入 Excel（.xlsx）。每個工作表各自辨識表頭；支援文字網址與超連結儲存格。"""
     from openpyxl import load_workbook
 
     wb = load_workbook(path, data_only=True)
     res = {"added": 0, "dup": 0, "failed": []}
     for ws in wb.worksheets:
-        rows = list(ws.iter_rows())
-        hdr_i = next((i for i, r in enumerate(rows[:10]) if "url" in _find_cols([c.value for c in r])), None)
-        if hdr_i is None:
-            res["failed"].append((ws.title, "找不到「商品連結」欄（表頭請含：商品連結 / 商品網址 / 連結 / url）"))
-            continue
-        cols = _find_cols([c.value for c in rows[hdr_i]])
-        for r in rows[hdr_i + 1:]:
-            url = _cell_url(r[cols["url"]]) if cols["url"] < len(r) else ""
-            if not url:
-                continue
-            get = lambda k: str(r[cols[k]].value or "").strip() if k in cols and cols[k] < len(r) else ""  # noqa: E731
-            try:
-                original = url
-                if db.shopee_key(url) is None and any(h in url for h in SHORT_HOSTS):
-                    url = expand_short(url)
-                pid = db.add_product(conn, url, title=get("title"), price=get("price"), source_url=original)
-            except Exception as e:  # noqa: BLE001
-                res["failed"].append((f"{ws.title} 第{r[0].row}列", str(e)[:120]))
-                continue
-            if pid is None:
-                res["dup"] += 1
-                continue
-            res["added"] += 1
-            by_name = {c["name"]: c["id"] for c in db.list_characters(conn)}
-            if get("char") in by_name:  # 「主角」欄填的名稱對得上，就套用
-                db.update(conn, pid, character_id=by_name[get("char")])
-            if get("src") in ("web", "ai", "上網找", "AI 生成", "AI"):
-                db.update(conn, pid, image_source="ai" if "AI" in get("src") or get("src") == "ai" else "web")
-            pts = [get(k) for k in ("p1", "p2", "p3") if get(k)]
-            if pts:
-                db.update(conn, pid, script=json.dumps({"user_points": pts}, ensure_ascii=False))
+        rows = [[(c.value if c.value is not None else "", c.hyperlink.target if c.hyperlink and c.hyperlink.target else "")
+                 for c in r] for r in ws.iter_rows()]
+        _merge(res, import_table(conn, rows, ws.title if len(wb.worksheets) > 1 else ""))
     return res
+
+
+def import_file(conn, path: str) -> dict:
+    """依副檔名匯入：.csv / .tsv / .txt → CSV；.xlsx / .xlsm → Excel。"""
+    ext = Path(path).suffix.lower()
+    if ext in (".xlsx", ".xlsm"):
+        return import_excel(conn, path)
+    if ext in (".csv", ".tsv", ".txt"):
+        return import_csv(conn, path)
+    if ext == ".xls":
+        return {"added": 0, "dup": 0, "failed": [(Path(path).name, "不支援舊版 .xls，請用 Excel 另存成 .xlsx 或 .csv")]}
+    return {"added": 0, "dup": 0, "failed": [(Path(path).name, f"不認得的檔案類型 {ext or '(無副檔名)'}，請用 .csv 或 .xlsx")]}
 
 
 def login() -> None:

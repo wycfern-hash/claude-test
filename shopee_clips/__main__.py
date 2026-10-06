@@ -1,5 +1,5 @@
 """python -m shopee_clips            啟動整個程式（背景自動流程 + 審核網頁）
-python -m shopee_clips import-excel 選品.xlsx
+python -m shopee_clips import-file 選品.csv    （或 .xlsx；舊指令 import-excel 仍可用）
 python -m shopee_clips check-key     測 Gemini key
 python -m shopee_clips probe         擷取自動化 Chrome 目前所有分頁的畫面結構到 data/debug
 python -m shopee_clips check-phone   測試 Android 手機連線
@@ -23,19 +23,19 @@ def lan_ip() -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(prog="shopee_clips")
     sub = ap.add_subparsers(dest="cmd")
-    x = sub.add_parser("import-excel")
-    x.add_argument("path")
+    for name in ("import-file", "import-excel"):
+        sub.add_parser(name).add_argument("path")
     sub.add_parser("check-key")
     sub.add_parser("probe")
     sub.add_parser("probe-phone")
     sub.add_parser("check-phone")
     args = ap.parse_args()
 
-    if args.cmd == "import-excel":
+    if args.cmd in ("import-file", "import-excel"):
         from . import db, sourcing
 
         with db.connect() as conn:
-            r = sourcing.import_excel(conn, args.path)
+            r = sourcing.import_file(conn, args.path)
         print(f"新增 {r['added']}、重複 {r['dup']}、失敗 {len(r['failed'])}")
         for where, why in r["failed"]:
             print(f"  ✗ {where}：{why}")

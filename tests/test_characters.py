@@ -386,3 +386,102 @@ def test_enrich_is_not_retried_forever():
         p2 = db.add_product(conn, "https://shopee.tw/q-i.1.77")  # 沒標題 → 還是要補
         db.update(conn, p2, image_source="ai")
         assert sourcing.needs_enrich(db.get(conn, p2))
+
+
+# ---------------------------------------------------------------- CSV 匯入（蝦皮分潤後台下載的是 CSV）
+def csv_import(tmp_path, text: str, encoding="utf-8-sig", name="x.csv", monkeypatch=None):
+    from shopee_clips import sourcing
+
+    f = tmp_path / name
+    f.write_bytes(text.encode(encoding))
+    with db.connect() as conn:
+        res = sourcing.import_file(conn, str(f))
+        rows = {r["shopee_key"]: dict(r) for r in conn.execute("SELECT * FROM products")}
+    return res, rows
+
+
+def test_csv_utf8_bom_basic(tmp_path):
+    res, rows = csv_import(tmp_path, "商品名稱,商品連結,價格\n保溫杯,https://shopee.tw/a-i.1.2,\"1,299\"\n小風扇,https://shopee.tw/b-i.3.4,199\n")
+    assert (res["added"], res["dup"], res["failed"]) == (2, 0, [])
+    assert rows["1.2"]["title"] == "保溫杯" and rows["1.2"]["price"] == "1,299"
+
+
+def test_csv_big5_tab_and_semicolon(tmp_path):
+    big5, _ = csv_import(tmp_path, "商品名稱\t商品連結\n保溫杯\thttps://shopee.tw/a-i.1.2\n", encoding="cp950", name="big5.csv")
+    assert big5["added"] == 1
+    semi, rows = csv_import(tmp_path, "sep=;\n商品名稱;商品連結\n風扇;https://shopee.tw/b-i.3.4\n", name="semi.csv")
+    assert semi["added"] == 1 and rows["3.4"]["title"] == "風扇"                    # 第一行 sep=; 也處理
+    u16, _ = csv_import(tmp_path, "商品名稱,商品連結\n燈,https://shopee.tw/c-i.5.6\n", encoding="utf-16", name="u16.csv")
+    assert u16["added"] == 1
+
+
+def test_csv_header_notes_and_affiliate_link(tmp_path, monkeypatch):
+    from shopee_clips import sourcing
+
+    monkeypatch.setattr(sourcing, "expand_short", lambda u: (_ for _ in ()).throw(AssertionError("不該展開")))
+    res, rows = csv_import(tmp_path, "商品名稱(必填),商品連結,分潤連結,店鋪名稱\n保溫杯,https://shopee.tw/a-i.1.2,https://s.shopee.tw/aff,某店\n")
+    r = rows["1.2"]
+    assert res["added"] == 1 and r["title"] == "保溫杯"                                  # 「店鋪名稱」不會被誤當商品名稱
+    assert r["url"] == "https://shopee.tw/a-i.1.2" and r["source_url"] == "https://s.shopee.tw/aff"   # 標記商品用分潤連結
+
+
+def test_csv_affiliate_only_short_link_and_ids(tmp_path, monkeypatch):
+    from shopee_clips import sourcing
+
+    monkeypatch.setattr(sourcing, "expand_short", lambda u: "https://shopee.tw/product/7/8" if u.endswith("/ok") else (_ for _ in ()).throw(RuntimeError("blocked")))
+    res, rows = csv_import(tmp_path, "商品名稱,推廣連結,商品ID,店鋪ID\nA,https://s.shopee.tw/ok,8,7\nB,https://s.shopee.tw/bad,12345.0,999.0\nC,,22,33\n")
+    assert res["added"] == 3 and res["failed"] == []
+    assert rows["7.8"]["source_url"] == "https://s.shopee.tw/ok"
+    assert rows["999.12345"]["url"] == "https://shopee.tw/product/999/12345"            # 短連結展開失敗 → 退回 ID 組網址
+    assert rows["33.22"]["source_url"] == ""                                              # 只有 ID：沒有分潤連結
+
+
+def test_csv_unknown_header_guessed_by_content(tmp_path):
+    res, rows = csv_import(tmp_path, "品項,網路位置,備註\n保溫杯,https://shopee.tw/a-i.1.2,x\n風扇,https://shopee.tw/b-i.3.4,y\n")
+    assert res["added"] == 2 and set(rows) == {"1.2", "3.4"}
+
+
+def test_csv_unrecognised_file_lists_headers(tmp_path):
+    res, _ = csv_import(tmp_path, "水果,數量\n蘋果,3\n")
+    assert res["added"] == 0 and "水果、數量" in res["failed"][0][1]
+
+
+def test_csv_extras_images_description_hyperlink_formula(tmp_path):
+    res, rows = csv_import(tmp_path, '商品名稱,商品連結,圖片連結,商品描述\n杯,"=HYPERLINK(""https://shopee.tw/a-i.1.2"",""點我"")",'
+                                     '"https://img.example/1.jpg, https://img.example/2.jpg",好用\n')
+    r = rows["1.2"]
+    assert res["added"] == 1 and json.loads(r["ref_images"]) == ["https://img.example/1.jpg", "https://img.example/2.jpg"]
+    assert r["description"] == "好用"                                                      # 圖片連結只存成「參考圖」，不是成品
+
+
+def test_csv_blank_rows_footer_and_duplicates(tmp_path):
+    res, _ = csv_import(tmp_path, "商品名稱,商品連結\n\n保溫杯,https://shopee.tw/a-i.1.2\n保溫杯,https://shopee.tw/a-i.1.2\n合計,\n,,\n")
+    assert (res["added"], res["dup"]) == (1, 1) and len(res["failed"]) == 1 and "沒有商品連結" in res["failed"][0][1]
+
+
+def test_import_file_types(tmp_path):
+    from shopee_clips import sourcing
+
+    with db.connect() as conn:
+        assert "舊版 .xls" in sourcing.import_file(conn, str(tmp_path / "a.xls"))["failed"][0][1]
+        assert "不認得" in sourcing.import_file(conn, str(tmp_path / "a.pdf"))["failed"][0][1]
+
+
+def test_web_upload_csv_keeps_suffix(tmp_path, monkeypatch):
+    import time as _t
+
+    from shopee_clips import worker
+    from shopee_clips.web import app
+
+    c = TestClient(app)
+    r = c.post("/import-file", files={"file": ("選品.csv", "商品名稱,商品連結\n杯,https://shopee.tw/a-i.1.2\n".encode("utf-8-sig"), "text/csv")})
+    assert r.status_code == 200
+    for _ in range(50):
+        with db.connect() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+        if n:
+            break
+        _t.sleep(0.1)
+    assert n == 1 and any(p.suffix == ".csv" for p in (config.DATA_DIR / "inbox").iterdir())
+    assert "新增 1" in "\n".join(worker.log[-5:])
+    assert ".csv" in c.get("/").text and "分潤" in c.get("/").text
