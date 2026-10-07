@@ -480,7 +480,7 @@
     const html = Object.entries(S.posts).filter(([k]) => rowsByKey[k]).map(([k, d], n) => {
       const r = rowsByKey[k];
       const warn = SC.linkOf(r) ? '' : '<div class="bad small">⚠ 這個商品還沒轉成分潤連結，文案裡會先放提示文字；請先按上方「②」轉換後再複製。</div>';
-      const note = d.aiError ? `<div class="warnx small">AI 失敗（${esc(d.aiError)}），這份改用範本。</div>` : '';
+      const note = d.aiError ? `<div class="warnx small">AI 失敗（${esc(d.aiError)}），這份改用範本。${/no longer available|not found|404|deprecated|model/i.test(d.aiError) ? '<br>可能是模型改版或下架了：按上面「查我的 key 能用哪些模型」，換一個再重新生成。' : ''}</div>` : '';
       const inner = d.posts.map((it, i) => `<details ${i === 0 ? 'open' : ''}><summary>${esc(SC.styleZh(it.style))}</summary>`
         + copyBox(`po${n}_${i}`, '貼文（含分潤連結）', SC.compose(r, it, true, disc))
         + copyBox(`po${n}_${i}n`, '貼文（不含連結，連結放留言區用）', SC.compose(r, it, false, disc))
@@ -570,6 +570,15 @@
   $('btnSelNone').addEventListener('click', () => { S.sel = {}; render(); });
   $('pProvider').addEventListener('change', () => savePostCfg(true));
   for (const id of ['pModel', 'pKey', 'pDisc']) $(id).addEventListener('change', () => savePostCfg(false));
+  $('btnModels').addEventListener('click', async () => {
+    const cfg = { provider: $('pProvider').value, key: $('pKey').value.trim() };
+    if (!cfg.provider) { setMsg('先選「寫文案用的 AI」。', 'warn'); return; }
+    try {
+      const list = await SC.listModels(cfg);
+      $('pModels').innerHTML = list.map((m) => `<option value="${esc(m)}">`).join('');
+      setMsg(`你的 key 現在可以用 ${list.length} 個模型，已放進「模型」欄的選單（點一下輸入框就會跳出來）。` + (list.length ? `例如：${list.slice(0, 4).join('、')}` : ''), 'ok');
+    } catch (e) { setMsg('❌ ' + e.message, 'err'); }
+  });
   $('btnPosts').addEventListener('click', () => generatePosts().catch((e) => { setMsg('❌ ' + e.message, 'err'); $('btnPosts').disabled = false; }));
   $('btnPostsCsv').addEventListener('click', exportPostsCsv);
   $('btnPostsCopy').addEventListener('click', copyAllPosts);

@@ -39,7 +39,7 @@ def test_template_posts_have_three_styles_and_disclosure_and_link():
     assert "https://s.shopee.tw/AbC" in full and config.POST_DISCLOSURE in full
     assert "https://s.shopee.tw/AbC" not in posts.compose(row, data["posts"][0], False)
     assert "https://s.shopee.tw/AbC" in posts.compose_comment(row, data["posts"][0])
-    assert posts.load(row)["posts"][1]["text"].startswith("A：")
+    assert posts.load(row)["posts"][1]["text"].startswith("A：") and "你們有沒有" not in data["posts"][0]["text"]
 
 
 def test_plain_link_is_never_used_as_affiliate():

@@ -267,7 +267,9 @@ test('範本：3 則情境貼文 + Threads；價格、折扣、場次都是抓�
   assert.match(all, /\$299/); assert.match(all, /\$427/); assert.match(all, /30% off/);
   assert.match(all, /限時特賣/);
   assert.doesNotMatch(all, /最低價|回購|用了.*個月|保證/);
-  assert.match(d.posts[1].text, /^A：/);
+  assert.ok(d.posts.every((p) => /：/.test(p.text)));                  // 都是「我：／A：」這種小劇場
+  assert.doesNotMatch(all, /你們有沒有|留言跟我說|週末整理/);        // 不要刻意的制式句
+  assert.notEqual(PO.templatePosts({ ...ROW, name: '完全不同的商品名' }, S, NOW).posts[0].text, d.posts[0].text);
 });
 test('場次已結束就不提時間', () => {
   const d = PO.templatePosts({ ...ROW, start: 1, end: 2 }, S, NOW);
@@ -285,7 +287,7 @@ test('連結：只用分潤連結；沒有就放提示，不會用一般網址',
 test('AI 提示詞：只給事實、禁止編造、不要網址', () => {
   const p = PO.buildPrompt(ROW, S, NOW);
   assert.match(p, /商品名稱：【特價】保溫杯 500ml/); assert.match(p, /特價：\$299/);
-  assert.match(p, /不要編造/); assert.match(p, /不要放任何網址/); assert.match(p, /功能、成分、規格/);
+  assert.match(p, /不要編造/); assert.match(p, /幽默/); assert.match(p, /不要用「你們有沒有/); assert.match(p, /不要放任何網址/); assert.match(p, /功能、成分、規格/);
 });
 const AI = { posts: [{ style: 'story', text: 'S', comment: 'c' }, { style: 'dialog', text: 'D' }, { style: 'pain', text: 'P' }], threads: 'T' };
 function mockFetch(check, body, ok = true) {
@@ -318,4 +320,18 @@ test('文案 CSV：每則一列、含 Threads、欄位正確跳脫', () => {
   assert.ok(csv.startsWith('\ufeff商品名稱,風格,'));
   assert.equal((csv.match(/Threads 短文/g) || []).length, 1);
   assert.ok(csv.includes('生活小故事') && csv.includes('對話情境劇') && csv.includes('痛點共鳴') && csv.includes('https://s.shopee.tw/AbC'));
+});
+
+test('查模型清單：Gemini 只留能 generateContent 的、去掉 models/ 前綴；錯誤訊息帶出來', async () => {
+  const ms = await PO.listModels({ provider: 'gemini', key: 'K' }, mockFetch((u, o) => { assert.match(u, /v1beta\/models/); assert.equal(o.headers['x-goog-api-key'], 'K'); },
+    { models: [{ name: 'models/gemini-3-flash-preview', supportedGenerationMethods: ['generateContent'] }, { name: 'models/embedding-001', supportedGenerationMethods: ['embedContent'] }] }));
+  assert.deepEqual(ms, ['gemini-3-flash-preview']);
+  assert.deepEqual(await PO.listModels({ provider: 'openai', key: 'K' }, mockFetch(() => {}, { data: [{ id: 'gpt-4.1-mini' }, { id: 'whisper-1' }] })), ['gpt-4.1-mini']);
+  assert.deepEqual(await PO.listModels({ provider: 'claude', key: 'K' }, mockFetch(() => {}, { data: [{ id: 'claude-sonnet-5-5' }] })), ['claude-sonnet-5-5']);
+  await assert.rejects(PO.listModels({ provider: 'gemini', key: 'bad' }, mockFetch(() => {}, { error: { message: 'API key not valid' } }, false)), /API key not valid/);
+  await assert.rejects(PO.listModels({ provider: 'gemini', key: '' }), /API key/);
+});
+test('預設的 Gemini 模型建議不含已下架的 2.5-pro', () => {
+  const g = PO.PROVIDERS.find((p) => p[0] === 'gemini')[2];
+  assert.ok(g.includes('gemini-3.1-pro-preview') && !g.includes('gemini-2.5-pro'));
 });

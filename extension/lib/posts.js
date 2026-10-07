@@ -39,33 +39,59 @@
     return a.join('｜');
   }
 
+  const hashOf = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
+  // 範本（不用 AI）：幽默吐槽風，每個商品依名稱挑不同的哏，只用抓到的價格／折扣／場次，不編造功能或心得
   function templatePosts(r, S, nowMs) {
-    const n = (r.name || '這個好物').replace(/[【\[].*?[】\]]/g, '').trim().slice(0, 22) || '這個好物';
-    const sale = saleLine(r, S, nowMs), price = priceLine(r);
-    const tail = [price, sale].filter(Boolean).join('\n');
-    const tags = '#蝦皮特價 #好物推薦 #省錢';
+    const n = (r.name || '這個好物').replace(/[【\[].*?[】\]]/g, '').replace(/[🔥⭐✨💥❗]/g, '').trim().slice(0, 18) || '這個好物';
+    const sale = saleLine(r, S, nowMs);
+    const priceTxt = r.price != null ? money(r.price) : '特價';
+    const pctTxt = r.discountPct ? `${r.discountPct}% off` : '在特價';
+    const facts = priceLine(r);
+    const foot = [facts, sale].filter(Boolean).join('\n');
+    const h = hashOf(r.name);
+    const pick = (arr) => arr[h % arr.length];
+    const tags = '#蝦皮特價 #手滑 #省錢';
+    const story = pick([
+      `我：這個月要存錢，不亂買。\n蝦皮：「${n}」${priceTxt}。\n我：……\n（手已經在結帳）\n\n${foot}`,
+      `朋友問我最近有沒有存到錢。\n我看了一眼購物車裡的「${n}」，默默把手機蓋起來。\n\n${foot}`,
+      `錢包：拜託不要。\n眼睛：看到「${n}」${pctTxt}。\n手指：我來處理。\n\n${foot}`,
+    ]);
+    const dialog = pick([
+      `A：你又買東西了？\nB：沒有，是它自己跑進購物車的。\nA：什麼東西？\nB：「${n}」，${pctTxt}，我能怎麼辦。\n\n${foot}`,
+      `A：這個真的需要嗎？\nB：現在 ${priceTxt}，需要。\nA：你上次也這樣說。\nB：這次是真的（大概）。\n\n「${n}」\n${foot}`,
+      `客服：請問還有其他需要嗎？\n我：沒有了。\n（五分鐘後）\n我：「${n}」${priceTxt}，可以加購嗎。\n\n${foot}`,
+    ]);
+    const pain = pick([
+      `${r.original ? '原價 ' + money(r.original) + '，' : ''}現在 ${priceTxt}。\n理智：「${n}」不是必需品。\n手指：已經按下去了。\n\n${sale || facts}`,
+      `大人的三大謊言：\n1. 我馬上睡\n2. 我只是看看\n3. 這個特價我不買\n\n（「${n}」${priceTxt}，第三個先破功）\n${sale}`.trim(),
+      `今日省錢小技巧：不要滑到「${n}」。\n我：已經滑到了。\n\n${foot}`,
+    ]);
+    const cm = pick(['想一起手滑的在這 👇', '連結放這，後果自負 😂', '要買的話在這 👇']);
     return {
       posts: [
-        { style: 'story', text: `週末整理家裡的時候，又發現「${n}」快用完了……\n剛好滑到特價，直接心動。\n\n${tail}\n\n你們家有沒有也快見底的東西？留言跟我說 👇\n${tags}`, comment: '想看的在這 👇' },
-        { style: 'dialog', text: `A：欸你最近有沒有在買「${n}」？\nB：有啊，剛好看到特價\nA：多少？\nB：${price || '現在有打折'}${sale ? '\n' + sale : ''}\n\n你身邊也有這種「先買先贏」的朋友嗎？😂\n${tags}`, comment: '朋友問的那款在這' },
-        { style: 'pain', text: `每次想補貨都在等特價對不對？\n「${n}」現在就有：\n${tail}\n\n你還在等什麼價位才下手？留言聊聊 👇\n${tags}`, comment: '連結放這 👇' },
+        { style: 'story', text: `${story}\n\n${tags}`, comment: cm },
+        { style: 'dialog', text: `${dialog}\n\n${tags}`, comment: cm },
+        { style: 'pain', text: `${pain}\n\n${tags}`, comment: cm },
       ],
-      threads: `每次都在等特價……「${n}」現在${price || '有折扣'}。你會入手嗎？`,
+      threads: pick([`「${n}」${priceTxt}。我的理智已下線。`, `說好不買的，然後「${n}」${pctTxt}。`, `我的荷包：「${n}」${priceTxt}。我：好。`]),
     };
   }
 
-  const PROMPT = `你是台灣臉書／Threads 的生活風格小編，幫分潤特價商品寫「情境劇」貼文：用一個小場景或小對話帶出這個特價，而不是只念價格叫賣。
-請依下列商品事實，寫 3 則風格不同的貼文＋1 則 Threads 短文，輸出 JSON。
-風格定義：
+  const PROMPT = `你是台灣 Threads／臉書上很會寫貼文的幽默小編。幫分潤特價商品寫「情境劇」貼文：用一個好笑、有點自嘲、讓人會心一笑的小場景或小對話，帶出這個特價，而不是廣告口吻。
+目標：滑到的人會停下來看完、甚至想留言「我也是」。請輸出 JSON。
+風格定義（三則的哏要完全不同）：
 {styles}
+寫法要求：
+- 繁體中文、台灣口語、像朋友吐槽；短、有節奏、有反差或自嘲（例如「說好不買的」「錢包：拜託不要」「手已經在結帳」那種），結尾要有個小梗收尾（不要用「你們有沒有類似的經驗？留言告訴我」這種制式問句）。
+- 每則 50~120 字；第一行就要有梗或有畫面，不要寫「大家好」「週末整理家裡」這類刻意的開場。不要像在念商品規格。
+- 三則的開頭、結構、梗都不要一樣；不要三則都用同一個句型。emoji 最多 0~2 個，hashtag 2~3 個放最後一行。
 硬性規定：
-- 繁體中文、台灣口語，像真人朋友在聊天；每則 100~200 字，第一行是一句會讓人想繼續看的開頭（不要寫「大家好」）。
 - 情境與人物是虛構示意：不要假裝是真人的使用心得，不要編造「用了三個月」「已回購」「客人都說好」之類的經驗或評價。
-- 你只知道下面這些事實（商品名稱、價格、折扣、場次時間）。商品的功能、成分、規格、功效、尺寸、產地一律不要寫，除非商品名稱裡本來就有；不可寫「最低價」「全網最便宜」「限量」「秒殺」等沒有依據的說法；不得有醫療／療效宣稱。
+- 你只知道下面這些事實（商品名稱、價格、折扣、場次時間）。商品的功能、成分、規格、功效、尺寸、產地一律不要寫，除非商品名稱裡本來就有；不可寫「最低價」「全網最便宜」「限量」「秒殺」等沒有依據的說法；不得有醫療／療效宣稱（商品是口罩、保健品等也不能說有什麼效果）。
 - 價格、折扣、場次時間要寫就必須和事實完全一致；場次已結束就不要提時間。
-- 貼文裡不要放任何網址（我會另外加）。結尾用一句自然的提問引導留言互動。emoji 適量（每則 0~4 個）。hashtag 3~5 個放最後一行。
-- comment：留言區的一句短文（20 字內），自然地請大家看商品連結。
-- threads：Threads 短文，80 字內，一個小情境＋一句結尾，不含 hashtag。
+- 貼文裡不要放任何網址（我會另外加）。
+- comment：留言區的一句短文（20 字內），輕鬆有趣地請大家看連結。
+- threads：Threads 短文，60 字內，一個梗，不含 hashtag。
 商品事實：
 {facts}
 JSON 格式：{"posts":[{"style":"story","text":"...","comment":"..."},{"style":"dialog",...},{"style":"pain",...}],"threads":"..."}`;
@@ -88,7 +114,7 @@ JSON 格式：{"posts":[{"style":"story","text":"...","comment":"..."},{"style":
 
   // 供應商不預設：使用者自己選、自己填 key 與模型
   const PROVIDERS = [
-    ['gemini', 'Google Gemini', ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro']],
+    ['gemini', 'Google Gemini', ['gemini-3-flash-preview', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview']],
     ['openai', 'OpenAI', ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o']],
     ['claude', 'Anthropic Claude', ['claude-haiku-4-5-20251001', 'claude-sonnet-5-5', 'claude-opus-5-5']],
   ];
@@ -123,6 +149,31 @@ JSON 格式：{"posts":[{"style":"story","text":"...","comment":"..."},{"style":
       data = await res.json();
       if (!res.ok) throw new Error('Claude：' + ((data.error && data.error.message) || res.status));
       return parseJson(data.content.map((c) => c.text || '').join(''));
+    }
+    throw new Error('沒有選 AI 服務');
+  }
+
+  // 向該家服務查「你的 key 現在能用哪些模型」（模型會改版/下架，清單比我寫死的準）
+  async function listModels(cfg, fetchImpl) {
+    const f = fetchImpl || fetch;
+    if (!cfg.key) throw new Error('請先填 API key');
+    if (cfg.provider === 'gemini') {
+      const res = await f('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': cfg.key } });
+      const d = await res.json();
+      if (!res.ok) throw new Error('Gemini：' + ((d.error && d.error.message) || res.status));
+      return (d.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => m.name.replace(/^models\//, ''));
+    }
+    if (cfg.provider === 'openai') {
+      const res = await f('https://api.openai.com/v1/models', { headers: { authorization: 'Bearer ' + cfg.key } });
+      const d = await res.json();
+      if (!res.ok) throw new Error('OpenAI：' + ((d.error && d.error.message) || res.status));
+      return (d.data || []).map((m) => m.id).filter((id) => /^(gpt|o\d|chatgpt)/.test(id));
+    }
+    if (cfg.provider === 'claude') {
+      const res = await f('https://api.anthropic.com/v1/models?limit=100', { headers: { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' } });
+      const d = await res.json();
+      if (!res.ok) throw new Error('Claude：' + ((d.error && d.error.message) || res.status));
+      return (d.data || []).map((m) => m.id);
     }
     throw new Error('沒有選 AI 服務');
   }
@@ -163,5 +214,5 @@ JSON 格式：{"posts":[{"style":"story","text":"...","comment":"..."},{"style":
     return '﻿' + lines.join('\r\n') + '\r\n';
   }
 
-  return { STYLES, PROVIDERS, DEFAULT_DISCLOSURE, facts, buildPrompt, templatePosts, parseJson, normalize, callAI, generate, linkOf, compose, composeComment, styleZh, postsToCsv, PLACEHOLDER };
+  return { STYLES, PROVIDERS, DEFAULT_DISCLOSURE, facts, buildPrompt, templatePosts, parseJson, normalize, callAI, listModels, generate, linkOf, compose, composeComment, styleZh, postsToCsv, PLACEHOLDER };
 });

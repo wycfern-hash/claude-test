@@ -86,7 +86,7 @@ SECRETS = {"GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FAL_KEY", "
 
 # 設定頁「模型」欄的下拉建議（只是建議，沒有預設值；也可自己輸入任何模型名稱）
 MODEL_SUGGESTIONS = {
-    ("text", "gemini"): ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+    ("text", "gemini"): ["gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"],
     ("text", "openai"): ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"],
     ("text", "claude"): ["claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"],
     ("image", "gemini"): ["gemini-2.5-flash-image", "gemini-3-pro-image-preview"],
