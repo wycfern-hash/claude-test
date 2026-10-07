@@ -1,6 +1,5 @@
 """審核 + 控制介面（手機/電腦瀏覽器都能開）。"""
 import html
-from urllib.parse import quote
 import json
 import threading
 import time
@@ -15,7 +14,7 @@ from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import browser, characters, cloud, config, db, imagegen, imgsearch, phone, posts, providers, social, scriptgen, sourcing, videogen, webauto, worker
+from . import browser, characters, cloud, config, db, imagegen, imgsearch, phone, providers, scriptgen, sourcing, videogen, webauto, worker
 
 config.ensure_dirs()
 
@@ -46,7 +45,7 @@ input[type=text],input[type=password],textarea,select{width:100%;box-sizing:bord
 input[type=file]{padding:8px 0;max-width:100%}
 nav{display:flex;flex-wrap:wrap;gap:6px 14px;padding:6px 0 10px;border-bottom:1px solid #ddd}
 nav a{text-decoration:none;color:#333;font-weight:600}nav a:hover{color:#ee4d2d}
-.ok-tag{color:#1a9b4b;font-size:13px}.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}small{color:#666}
+.err{color:#c00;font-size:13px}pre{white-space:pre-wrap;font-size:12px}small{color:#666}
 .flash{border-radius:10px;padding:12px 14px;margin:12px 0;font-weight:600}
 .flash.ok{background:#e4f6ea;border:1px solid #1a9b4b}.flash.err{background:#fde8e8;border:1px solid #c00}
 .flash.warn{background:#fff6dc;border:1px solid #d9a400}
@@ -58,7 +57,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:6px 4px;b
 details>summary{cursor:pointer;font-weight:600}
 </style>"""
 NAV = ('<nav><a href="/">開始</a><a href="/todo">待產圖</a><a href="/images">審圖</a><a href="/videos">審片</a>'
-       '<a href="/ready">上架包</a><a href="/posts">貼文</a><a href="/social">發文</a><a href="/list">管理列表</a><a href="/characters">主角</a><a href="/settings">設定</a>'
+       '<a href="/ready">上架包</a><a href="/list">管理列表</a><a href="/characters">主角</a><a href="/settings">設定</a>'
        '<a href="/status">檢查</a></nav>')
 
 
@@ -593,7 +592,7 @@ LABELS = {
     "CLOUD_ENDPOINT": "Endpoint（R2/B2/MinIO 才填；AWS S3 留空）", "CLOUD_BUCKET": "Bucket 名稱", "CLOUD_ACCESS_KEY": "Access key",
     "CLOUD_SECRET_KEY": "Secret key", "CLOUD_PUBLIC_BASE": "公開網址前綴（bucket 已公開才填；留空=7 天預簽名連結）",
     "AFFILIATE_PICKS_URL": "分潤後台選品頁網址（選填）",
-    "POST_DISCLOSURE": "貼文最後面的分潤／情境揭露文字（建議保留；清空就不加）",
+    
     "APP_PASSWORD": "網頁密碼（選填；手機/區網使用建議設）", "FLOW_CLIPS_PER_PRODUCT": "Flow 每商品幾段",
 }
 SPEC_TYPES = {n: t for n, _, t in config.SPEC}
@@ -665,7 +664,6 @@ def settings(saved: int = 0):
     body = (f'<div class=card><b>目前狀態</b><ul>{status}</ul><small>每一項都由你選擇服務並填入那一家的 key；沒有任何預設的服務或模型。</small></div>'
             + cards + _card("預設值", ["DEFAULT_IMAGE_SOURCE", "VIDEO_MODE"]) + _card("配音、字幕與標示", ["TTS", "TTS_VOICE", "SUBTITLES", "AI_LABEL"])
             + _card("流程與上架（蝦皮短影音只有手機版）", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "AFFILIATE_PICKS_URL", "APP_PASSWORD"])
-            + _card("臉書／Threads 貼文", ["POST_DISCLOSURE"])
             + _card("Android 手機自動上架（用 USB 偵錯操作蝦皮 App）", ["PHONE_SERIAL", "PHONE_PACKAGE"])
             + _card("雲端上傳（選填，S3 相容）", ["CLOUD_ENDPOINT", "CLOUD_BUCKET", "CLOUD_ACCESS_KEY", "CLOUD_SECRET_KEY", "CLOUD_PUBLIC_BASE"])
             + '<details class=card><summary><b>進階</b></summary>'
@@ -968,181 +966,6 @@ def list_csv():
                         r["video_title"], r["video_caption"], r["video_path"], r["cloud_url"], r["error"]])
     return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": "attachment; filename=shopee_clips.csv"})
-
-
-# ------------------------------------------------------------------ 臉書／Threads 情境貼文
-def _copy_box(dom_id: str, label: str, text: str, rows: int = 6) -> str:
-    return (f'<div style="margin:8px 0"><b>{e(label)}</b><textarea id={dom_id} rows={rows} readonly>{e(text)}</textarea>'
-            f'<button type=button class=g onclick="navigator.clipboard.writeText(document.getElementById(\'{dom_id}\').value);'
-            f'this.textContent=\'已複製 ✓\'">複製</button></div>')
-
-
-def _post_card(r) -> str:
-    data = posts.load(r)
-    link = posts.link_of(r)
-    warn = "" if link else '<div class=err>⚠ 這個商品還沒有分潤連結：貼文裡會先放提示文字，請先轉成分潤連結再貼。</div>'
-    inner = ""
-    for i, it in enumerate(data.get("posts", [])):
-        pid = f'p{r["id"]}_{i}'
-        inner += (f'<details {"open" if i == 0 else ""} style="margin:6px 0"><summary>{e(posts.style_zh(it.get("style", "")))}</summary>'
-                  + _copy_box(pid, "貼文（含連結）", posts.compose(r, it, True))
-                  + _copy_box(pid + "n", "貼文（不含連結，連結放留言區用）", posts.compose(r, it, False))
-                  + _copy_box(pid + "c", "留言區文字", posts.compose_comment(r, it), 2) + "</details>")
-    if data.get("threads"):
-        inner += '<details style="margin:6px 0"><summary>Threads 短文</summary>' + _copy_box(
-            f'p{r["id"]}_t', "Threads", data["threads"] + ("\n" + link if link else ""), 3) + "</details>"
-    btn = "重新產生" if data else "產生貼文"
-    return (f'<div class=card><b>#{r["id"]} {e(r["title"][:40])}</b> <small>{STATUS_ZH.get(r["status"], r["status"])}</small>{warn}'
-            f'<form method=post action=/posts/{r["id"]}><button class="{"g" if data else ""}">{btn}</button></form>{inner}</div>')
-
-
-@app.get("/posts")
-def posts_page():
-    with db.connect() as conn:
-        rows = [r for r in db.all_products(conn) if r["status"] != "skipped"]
-    done = sum(1 for r in rows if posts.load(r))
-    how = ("會用你在設定頁選的腳本 AI 寫（可能有 API 費用）" if providers.configured("text")
-           else "你還沒選腳本 AI，會用你填的賣點＋範本（比較制式；選了 AI 才會寫出貼近商品的情境）")
-    top = (f'<div class=card><b>情境貼文</b>：每個商品產 3 則「情境劇」式貼文（生活小故事／對話／痛點共鳴）＋ 1 則 Threads 短文，'
-           f'附你的分潤連結與揭露文字。<br><small>{e(how)}。人物與情境是虛構示意，不會編造使用心得或評價。</small>'
-           f'<p>已有貼文 {done} / {len(rows)} 個商品</p>'
-           f'<form method=post action=/posts/all style="display:inline"><button>幫還沒有貼文的商品全部產生</button></form> '
-           f'<a href="/posts.csv"><button type=button class=g>匯出貼文 CSV（給自動發文用）</button></a></div>')
-    return page(f"<h2>貼文</h2>{top}{''.join(_post_card(r) for r in rows) or '還沒有商品'}")
-
-
-@app.post("/posts/all")
-def posts_all():
-    def run():
-        ok, bad, err = posts.generate_missing()
-        worker.flash(f"✅ 貼文產生完成：成功 {ok} 個" + (f"，失敗 {bad} 個（{err}）" if bad else ""), "err" if bad and not ok else "ok")
-
-    worker.flash("⏳ 正在產生貼文，完成後會在這裡顯示（可先做別的事）。", "warn")
-    threading.Thread(target=run, daemon=True).start()
-    return back("/posts")
-
-
-@app.post("/posts/{pid}")
-def posts_one(pid: int):
-    with db.connect() as conn:
-        try:
-            posts.generate(conn, pid)
-            worker.flash("✅ 貼文已產生", "ok")
-        except Exception as ex:  # noqa: BLE001
-            worker.flash(f"❌ 產生貼文失敗：{ex}", "err")
-    return back(f"/posts#c{pid}")
-
-
-@app.get("/posts.csv")
-def posts_csv():
-    """給自動發文程式用：一列一則貼文；含完整貼文、留言區文字、分潤連結與已核准的圖片檔路徑。"""
-    import csv
-    import io
-
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["商品ID", "商品名稱", "風格", "貼文（含連結）", "貼文（不含連結）", "留言區文字", "分潤連結", "圖片檔"])
-    with db.connect() as conn:
-        for r in db.all_products(conn):
-            data = posts.load(r)
-            if not data:
-                continue
-            try:
-                imgs = json.loads(r["selected_images"]) or ([r["selected_image"]] if r["selected_image"] else [])
-            except ValueError:
-                imgs = []
-            img_cell = " | ".join(str(config.DATA_DIR / i) for i in imgs)
-            link = posts.link_of(r)
-            for it in data.get("posts", []):
-                w.writerow([r["id"], r["title"], posts.style_zh(it.get("style", "")), posts.compose(r, it, True),
-                            posts.compose(r, it, False), posts.compose_comment(r, it), link, img_cell])
-            if data.get("threads"):
-                w.writerow([r["id"], r["title"], "Threads 短文", data["threads"] + ("\n" + link if link else ""),
-                            data["threads"], "", link, img_cell])
-    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": "attachment; filename=shopee_posts.csv"})
-
-
-# ------------------------------------------------------------------ 發文：Threads / Facebook 粉絲專頁（操控你的 Chrome）
-@app.get("/social")
-def social_page(kw: str = ""):
-    with db.connect() as conn:
-        prods = [r for r in db.all_products(conn) if posts.load(r) and r["status"] != "skipped"]
-        done = {(x["product_id"], x["platform"]) for x in conn.execute("SELECT product_id, platform FROM social_posts WHERE status='posted'")}
-        ls = social.leads(conn, kw)
-        today = social.replied_today(conn)
-    fb = config.SOCIAL_FB_PAGE_URL
-    rows_html = ""
-    for r in prods:
-        has_link = bool(posts.link_of(r))
-        cell = ""
-        for plat, zh in (("threads", "Threads"), ("facebook", "Facebook")):
-            if (r["id"], plat) in done:
-                cell += f'<span class=ok-tag>✔ 已發 {zh}</span> '
-            elif has_link:
-                cell += f'<button name=go value="{r["id"]}:{plat}">發到 {zh}</button> '
-        rows_html += f'<div class=todo><div>{e(r["title"][:34])}{"" if has_link else " <span class=err>（還沒有分潤連結）</span>"}</div><div>{cell}</div></div>'
-    post_card = f"""<div class=card><b>① 發文</b>
-<p><small>文字在上面，<b>分潤連結放在第一則留言</b>。每個商品每個平台只發一次。沒有分潤連結的商品不能發。</small></p>
-<form method=post action=/social/login><button class=g>第一次先按這裡：開 Chrome 登入 Threads／Facebook</button></form>
-<form method=post action=/social/fb-url class=row style="margin-top:8px"><label style="flex:3">Facebook 粉絲專頁網址<input type=text name=url value="{e(fb)}" placeholder="貼上你的粉絲專頁網址"></label><button class=g>儲存</button></form>
-<form method=post action=/social/post>
-<label><input type=checkbox name=preview value=1 checked> 只幫我貼好，<b>我自己按發佈</b>（第一次請先這樣試）</label>
-{rows_html or '<p>還沒有商品有貼文：先到「貼文」頁產生</p>'}</form></div>"""
-    lt = ""
-    for x in ls:
-        lt += (f'<form method=post action=/social/reply/{x["id"]} class=card style="margin:6px 0"><small>@{e(x["author"])}｜<a href="{e(x["url"])}" target=_blank>看原文</a></small>'
-               f'<div>「{e(x["text"][:200])}」</div><textarea name=draft rows=2 placeholder="寫一則回覆（不能放連結）">{e(x["draft"])}</textarea>'
-               f'{"<div class=err>" + e(x["error"]) + "</div>" if x["error"] else ""}'
-               f'<button>回覆這一篇</button> <button name=skip value=1 class=g>略過</button></form>')
-    find_card = f"""<div class=card><b>② Threads 搜尋後回覆</b>
-<p><small>輸入關鍵字，列出 Threads 上的相關貼文。每一篇都要你按「回覆這一篇」才會送出；回覆不能放連結；每天最多 {social.REPLY_DAILY_CAP} 篇（今天已回 {today} 篇）。</small></p>
-<form method=post action=/social/find class=row><label style="flex:3">關鍵字<input type=text name=keyword value="{e(kw)}" placeholder="例如：保溫杯推薦"></label><button>搜尋</button></form>
-{lt or '<p><small>還沒有搜尋結果</small></p>'}</div>"""
-    return page(f"<h2>發文</h2>{post_card}{find_card}")
-
-
-@app.post("/social/login")
-def social_login():
-    """只開 Threads 與 Facebook；不會開 Gemini、Flow、蝦皮。"""
-    urls = ["https://www.threads.com/", config.SOCIAL_FB_PAGE_URL or "https://www.facebook.com/"]
-    _bg("開啟 Chrome", lambda conn: (browser.open_login_tabs(urls), "已開啟 Threads 與 Facebook，請在裡面登入")[1])
-    return back("/social")
-
-
-@app.post("/social/fb-url")
-def social_fb_url(url: str = Form("")):
-    config.save_env({"SOCIAL_FB_PAGE_URL": url.strip()})
-    worker.flash("已儲存粉絲專頁網址", "ok")
-    return back("/social")
-
-
-@app.post("/social/post")
-def social_post(go: str = Form(...), preview: str = Form("")):
-    pid, platform = go.split(":")
-    pv = bool(preview)
-    _bg("貼好文章" if pv else "發文", lambda conn: social.publish(conn, int(pid), platform, preview=pv), "{}")
-    return back("/social")
-
-
-@app.post("/social/find")
-def social_find(keyword: str = Form("")):
-    kw = keyword.strip()
-    if not kw:
-        worker.flash("❌ 請輸入關鍵字", "err")
-        return back("/social")
-    _bg("搜尋 Threads", lambda conn: f"找到 {social.find_topics(conn, kw)} 篇新的貼文", "{}")
-    return back("/social?kw=" + quote(kw))
-
-
-@app.post("/social/reply/{lid}")
-def social_reply(lid: int, draft: str = Form(""), skip: str = Form("")):
-    if skip:
-        with db.connect() as conn:
-            conn.execute("UPDATE social_leads SET status='skipped' WHERE id=?", (lid,))
-        return back("/social")
-    _bg("回覆貼文", lambda conn: (social.send_lead(conn, lid, draft), "已送出")[1], "{}")
-    return back("/social")
 
 
 # ------------------------------------------------------------------ 檢查（遇到問題時把這頁截圖給我）

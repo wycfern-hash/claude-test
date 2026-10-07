@@ -4,7 +4,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const money = (v) => (v == null ? '—' : '$' + Number(v).toLocaleString('zh-TW'));
-  const S = { items: {}, sessions: {}, aff: {}, diag: [], progress: null, tab: 'flash', busy: false, stopCapture: false, sel: {}, posts: {}, pcfg: {} };
+  const S = { items: {}, sessions: {}, aff: {}, diag: [], progress: null, tab: 'flash', busy: false, stopCapture: false, sel: {}, posts: {}, pcfg: {}, posted: {}, leads: [], replyLog: [] };
 
   function setMsg(text, kind = 'info') { const m = $('msg'); m.textContent = text; m.className = text ? kind : ''; }
   function setBusy(b) {
@@ -14,13 +14,14 @@
 
   // ------------------------------------------------------------ 資料
   async function load() {
-    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate', 'lastRemoved', 'postsStore', 'postCfg']);
+    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate', 'lastRemoved', 'postsStore', 'postCfg', 'socialPosted', 'leads', 'replyLog']);
     S.posts = g.postsStore || {}; S.pcfg = g.postCfg || {};
+    S.posted = g.socialPosted || {}; S.leads = g.leads || []; S.replyLog = g.replyLog || [];
     S.tpl = g.affTemplate || null;
     S.removed = g.lastRemoved || null;
     S.items = g.items || {}; S.sessions = g.sessions || {}; S.aff = g.aff || {}; S.diag = g.diag || []; S.progress = g.progress || null;
     render();
-    renderPostCfg(); renderPosts();
+    renderPostCfg(); renderPosts(); renderLeads();
   }
   let renderTimer = null;
   chrome.storage.onChanged.addListener((ch, area) => {
@@ -440,12 +441,12 @@
     setMsg(`已複製 ${rows.length} 個商品的文案（含分潤連結）。`, 'ok');
   }
   async function downloadDiag() {
-    const g = await chrome.storage.local.get(['diag', 'diagAffiliate', 'sessions', 'items', 'captureLog']);
+    const g = await chrome.storage.local.get(['diag', 'diagAffiliate', 'sessions', 'items', 'captureLog', 'socialDiag']);
     const items = Object.values(g.items || {});
     download(`shopee_helper_diag_${stamp()}.json`, JSON.stringify({
       version: chrome.runtime.getManifest().version, userAgent: navigator.userAgent, now: new Date().toISOString(),
       itemCount: items.length, sampleItems: items.slice(0, 3), sessions: g.sessions || {},
-      captured: g.diag || [], captureLog: g.captureLog || null, affiliate: g.diagAffiliate || null,
+      captured: g.diag || [], captureLog: g.captureLog || null, affiliate: g.diagAffiliate || null, social: g.socialDiag || null,
     }, null, 1), 'application/json');
     setMsg('已下載診斷檔，把它傳給我。', 'ok');
   }
@@ -463,9 +464,11 @@
     if (document.activeElement !== $('pKey')) $('pKey').value = S.pcfg.key || '';
     if (document.activeElement !== $('pDisc')) $('pDisc').value = S.pcfg.disclosure == null ? SC.DEFAULT_DISCLOSURE : S.pcfg.disclosure;
     $('pModel').disabled = $('pKey').disabled = !prov;
+    if (document.activeElement !== $('pFb')) $('pFb').value = S.pcfg.fbUrl || '';
+    $('pPreview').checked = S.pcfg.preview !== false;
   }
   async function savePostCfg(providerChanged) {
-    const cur = { provider: $('pProvider').value, model: $('pModel').value.trim(), key: $('pKey').value.trim(), disclosure: $('pDisc').value };
+    const cur = { provider: $('pProvider').value, model: $('pModel').value.trim(), key: $('pKey').value.trim(), disclosure: $('pDisc').value, fbUrl: $('pFb').value.trim(), preview: $('pPreview').checked };
     if (providerChanged) cur.model = '';                   // 換一家就不沿用上一家的模型名稱
     S.pcfg = cur;
     await chrome.storage.local.set({ postCfg: cur });
@@ -484,7 +487,10 @@
       const inner = d.posts.map((it, i) => `<details ${i === 0 ? 'open' : ''}><summary>${esc(SC.styleZh(it.style))}</summary>`
         + copyBox(`po${n}_${i}`, '貼文（含分潤連結）', SC.compose(r, it, true, disc))
         + copyBox(`po${n}_${i}n`, '貼文（不含連結，連結放留言區用）', SC.compose(r, it, false, disc))
-        + copyBox(`po${n}_${i}c`, '留言區文字', SC.composeComment(r, it), 2) + '</details>').join('')
+        + copyBox(`po${n}_${i}c`, '留言區文字', SC.composeComment(r, it), 2)
+        + `<div style="margin:6px 0"><button data-post="threads" data-key="${esc(k)}" data-idx="${i}">把這則發到 Threads</button> <button data-post="facebook" data-key="${esc(k)}" data-idx="${i}">把這則發到 Facebook 粉絲專頁</button>
+          ${S.posted[k + ':threads'] ? '<span class="good small">✔ 已發過 Threads</span>' : ''} ${S.posted[k + ':facebook'] ? '<span class="good small">✔ 已發過 Facebook</span>' : ''}
+          <div class="small">文字在上面，分潤連結放在第一則留言。</div></div></details>`).join('')
         + (d.threads ? `<details><summary>Threads 短文</summary>${copyBox(`po${n}_t`, 'Threads', d.threads + (SC.linkOf(r) ? '\n' + SC.linkOf(r) : ''), 3)}</details>` : '');
       return `<details class="card" style="margin:8px 0"><summary><b>${esc(r.name.slice(0, 40))}</b> <span class="small">${d.by === 'template' ? '範本' : 'AI'}</span></summary>${warn}${note}${inner}</details>`;
     }).join('');
@@ -539,6 +545,104 @@
     setMsg(`已複製 ${ent.length} 個商品的全部文案。`, 'ok');
   }
 
+  // ------------------------------------------------------------ 發到 Threads／Facebook、Threads 搜尋回覆（用你這個 Chrome 已登入的帳號）
+  async function pingSocial(tabId, tries = 30) {
+    for (let i = 0; i < tries; i++) {
+      try { const r = await chrome.tabs.sendMessage(tabId, { cmd: 'social:ping' }); if (r && r.ok) return; } catch (e) { /* 還沒好 */ }
+      await sleep(500);
+    }
+    throw new Error('小幫手沒有在那個頁面啟動：請確認那個視窗是 Threads／Facebook 的正常頁面，並已登入；剛更新過小幫手的話，也要重新載入一次。');
+  }
+  // 開視窗 → 傳指令給頁面裡的小幫手 → 回傳結果（失敗也會把畫面上的按鈕清單存起來給診斷檔）
+  async function socialRun(url, msg) {
+    const w = await openWindow(url);
+    let r;
+    try { await pingSocial(w.tabId); r = await chrome.tabs.sendMessage(w.tabId, msg); }
+    catch (e) { r = { ok: false, error: e.message, stage: '' }; }
+    if (!r.ok) await chrome.storage.local.set({ socialDiag: { at: new Date().toISOString(), cmd: msg.cmd, stage: r.stage || '', error: r.error, dump: r.dump || null } });
+    return { w, r };
+  }
+
+  async function publishPost(key, idx, platform) {
+    const r = viewRows().find((x) => x.key === key);
+    const d = S.posts[key], it = d && d.posts[idx];
+    if (!r || !it) return;
+    if (!SC.linkOf(r)) { setMsg('這個商品還沒轉成分潤連結：先按上面「②」轉換，才能發文（避免發出沒有分潤的貼文）。', 'warn'); return; }
+    const fb = $('pFb').value.trim();
+    if (platform === 'facebook' && !/^https?:\/\//.test(fb)) { setMsg('要發 Facebook，請先在上面填「Facebook 粉絲專頁網址」。', 'warn'); return; }
+    if (S.posted[key + ':' + platform] && !confirm('這個商品已經發過這個平台了，確定要再發一次嗎？（重複發類似內容可能影響帳號品質）')) return;
+    await savePostCfg(false);
+    const preview = $('pPreview').checked, disc = $('pDisc').value;
+    const zh = platform === 'threads' ? 'Threads' : 'Facebook 粉絲專頁';
+    setMsg(`正在開 ${zh} 視窗…請不要關掉，也不要碰那個視窗。`, 'info');
+    $('postOut').querySelectorAll('[data-post]').forEach((b) => { b.disabled = true; });
+    try {
+      const { w, r: res } = await socialRun(platform === 'threads' ? SC.config.threadsHome : fb,
+        { cmd: `social:${platform}-post`, text: SC.compose(r, it, false, disc), comment: SC.composeComment(r, it), preview });
+      if (!res.ok) { setMsg(`❌ 卡在「${res.stage || '開啟頁面'}」：${res.error}。視窗先留著給你看；把「下載診斷檔」傳給我，我就能修。`, 'err'); return; }
+      if (!res.published) { setMsg(`已經幫你貼好了（停在發佈前）：請看那個 ${zh} 視窗，沒問題就自己按「發佈」。`, 'ok'); return; }
+      S.posted[key + ':' + platform] = Date.now();
+      await chrome.storage.local.set({ socialPosted: S.posted });
+      renderPosts();
+      setMsg(`✅ 已發到 ${zh}（文字在貼文上，分潤連結在第一則留言）。`, 'ok');
+      await sleep(2500); closeWin(w.winId);
+    } catch (e) { setMsg('❌ ' + e.message, 'err'); }
+    finally { $('postOut').querySelectorAll('[data-post]').forEach((b) => { b.disabled = false; }); }
+  }
+
+  function renderLeads() {
+    $('replyCount').textContent = SC.repliedToday(S.replyLog, Date.now());
+    const list = S.leads.map((l, i) => ({ l, i })).filter(({ l }) => l.status !== 'sent' && l.status !== 'skipped');
+    $('leadOut').innerHTML = list.map(({ l, i }) => `<div class="card" style="margin:6px 0"><div class="small">@${esc(l.author)}｜<a href="${esc(l.url)}" target="_blank">看原文</a>｜關鍵字：${esc(l.keyword)}</div>
+      <div>「${esc(l.text.slice(0, 200))}」</div>
+      <textarea id="lead${i}" rows="2" placeholder="寫一則回覆（不能放連結）" style="width:100%;box-sizing:border-box;padding:8px;font:inherit;border:1px solid #bbb;border-radius:8px">${esc(l.draft || '')}</textarea>
+      ${l.error ? `<div class="bad small">${esc(l.error)}</div>` : ''}
+      <button data-lead="${i}">回覆這一篇</button> <button class="g" data-skip="${i}">略過</button></div>`).join('')
+      || '<div class="small">還沒有搜尋結果</div>';
+  }
+  const saveLeads = () => chrome.storage.local.set({ leads: S.leads, replyLog: S.replyLog });
+
+  async function searchLeads() {
+    const kw = $('leadKw').value.trim();
+    if (!kw) { setMsg('請輸入關鍵字。', 'warn'); return; }
+    $('btnLeadSearch').disabled = true;
+    setMsg('正在開 Threads 搜尋…請不要關掉那個視窗。', 'info');
+    try {
+      const { w, r } = await socialRun(SC.config.threadsSearch.replace('{q}', encodeURIComponent(kw)), { cmd: 'social:search' });
+      if (!r.ok) { setMsg(`❌ 卡在「${r.stage || '開啟頁面'}」：${r.error}。把「下載診斷檔」傳給我，我就能修。`, 'err'); return; }
+      closeWin(w.winId);
+      const have = new Set(S.leads.map((l) => l.url));
+      const cfg = { provider: S.pcfg.provider, model: S.pcfg.model, key: S.pcfg.key };
+      let added = 0;
+      for (const f of r.results) {
+        if (have.has(f.url)) continue;
+        S.leads.unshift({ ...f, keyword: kw, status: 'new', draft: await SC.draftReply(cfg.provider ? cfg : null, f.text, kw), at: Date.now() });
+        added++;
+      }
+      await saveLeads(); renderLeads();
+      setMsg(`找到 ${r.results.length} 篇，新增 ${added} 篇。每一篇都要你按「回覆這一篇」才會送出。`, 'ok');
+    } catch (e) { setMsg('❌ ' + e.message, 'err'); }
+    finally { $('btnLeadSearch').disabled = false; }
+  }
+
+  async function replyLead(i) {
+    const l = S.leads[i];
+    const text = $('lead' + i).value;
+    const bad = SC.checkReply(text);
+    if (bad) { setMsg(bad, 'warn'); return; }
+    if (SC.repliedToday(S.replyLog, Date.now()) >= SC.REPLY_DAILY_CAP) { setMsg(`今天已經回了 ${SC.REPLY_DAILY_CAP} 篇，明天再繼續（保護你的帳號）。`, 'warn'); return; }
+    setMsg('正在開那篇貼文並回覆…請不要關掉視窗。', 'info');
+    try {
+      const { w, r } = await socialRun(l.url, { cmd: 'social:reply', text });
+      if (!r.ok) { l.status = 'failed'; l.error = `卡在「${r.stage || '開啟頁面'}」：${r.error}`; l.draft = text; await saveLeads(); renderLeads(); setMsg('❌ ' + l.error, 'err'); return; }
+      l.status = 'sent'; l.draft = text; l.error = '';
+      S.replyLog.push(Date.now());
+      await saveLeads(); renderLeads();
+      setMsg('✅ 已回覆。', 'ok');
+      await sleep(2000); closeWin(w.winId);
+    } catch (e) { setMsg('❌ ' + e.message, 'err'); }
+  }
+
   function syncTabs() { $('tabFlash').className = S.tab === 'flash' ? 'on' : ''; $('tabOther').className = S.tab === 'other' ? 'on' : ''; render(); }
 
   // ------------------------------------------------------------ 綁定
@@ -569,7 +673,7 @@
   $('btnSelAll').addEventListener('click', () => { for (const r of currentRows()) S.sel[r.key] = true; render(); });
   $('btnSelNone').addEventListener('click', () => { S.sel = {}; render(); });
   $('pProvider').addEventListener('change', () => savePostCfg(true));
-  for (const id of ['pModel', 'pKey', 'pDisc']) $(id).addEventListener('change', () => savePostCfg(false));
+  for (const id of ['pModel', 'pKey', 'pDisc', 'pFb', 'pPreview']) $(id).addEventListener('change', () => savePostCfg(false));
   $('btnModels').addEventListener('click', async () => {
     const cfg = { provider: $('pProvider').value, key: $('pKey').value.trim() };
     if (!cfg.provider) { setMsg('先選「寫文案用的 AI」。', 'warn'); return; }
@@ -580,9 +684,17 @@
     } catch (e) { setMsg('❌ ' + e.message, 'err'); }
   });
   $('btnPosts').addEventListener('click', () => generatePosts().catch((e) => { setMsg('❌ ' + e.message, 'err'); $('btnPosts').disabled = false; }));
+  $('btnLeadSearch').addEventListener('click', searchLeads);
+  $('leadOut').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-lead]'), k = ev.target.closest('[data-skip]');
+    if (b) replyLead(+b.dataset.lead);
+    if (k) { S.leads[+k.dataset.skip].status = 'skipped'; await saveLeads(); renderLeads(); }
+  });
   $('btnPostsCsv').addEventListener('click', exportPostsCsv);
   $('btnPostsCopy').addEventListener('click', copyAllPosts);
   $('postOut').addEventListener('click', async (ev) => {
+    const pb = ev.target.closest('[data-post]');
+    if (pb) { publishPost(pb.dataset.key, +pb.dataset.idx, pb.dataset.post); return; }
     const b = ev.target.closest('[data-copyid]');
     if (!b) return;
     await navigator.clipboard.writeText($(b.dataset.copyid).value);

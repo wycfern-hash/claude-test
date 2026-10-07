@@ -27,12 +27,43 @@ def mk_items(promo: int, base_id: int, n: int, start: int, end: int):
              "start_time": start, "end_time": end} for i in range(n)]
 
 
+SOC_THREADS = """<!doctype html><meta charset=utf-8><body>
+<div id=open onclick="openC()">有什麼新鮮事？</div><div id=area></div>
+<script>
+function openC(){ area.innerHTML='<div role=textbox contenteditable=true class=tb></div><div id=add onclick="addP()">新增到串文</div><button id=post onclick="doPost()">發佈</button>'; }
+function addP(){ const d=document.createElement('div'); d.setAttribute('role','textbox'); d.contentEditable=true; d.className='tb'; area.insertBefore(d, document.getElementById('add')); }
+async function doPost(){ const t=[...document.querySelectorAll('.tb')].map(x=>x.innerText);
+  await fetch('/__post',{method:'POST',body:JSON.stringify({platform:'threads',texts:t})}); area.innerHTML='<a href="/social/post/1">查看</a>'; }
+</script>"""
+SOC_POST = """<!doctype html><meta charset=utf-8><body>
+<div data-pressable-container="true"><a href="/@amy">amy</a><span dir="auto">請問這個好用嗎</span><div class=rb onclick="rep()">回覆</div></div>
+<div id=box></div>
+<script>
+function rep(){ box.innerHTML='<div role=textbox contenteditable=true id=tb></div><button onclick="send()">回覆</button>'; }
+async function send(){ await fetch('/__reply',{method:'POST',body:JSON.stringify({url:location.pathname,text:document.getElementById('tb').innerText})}); box.innerHTML='ok'; }
+</script>"""
+SOC_SEARCH = """<!doctype html><meta charset=utf-8><body>
+<div data-pressable-container="true"><a href="/@zoe">zoe</a><a href="/social/post/11">t</a><span dir="auto">最近想買保溫杯，有推薦的嗎</span></div>
+<div data-pressable-container="true"><a href="/@max">max</a><a href="/social/post/12">t</a><span dir="auto">保溫杯好難選</span></div>"""
+SOC_FB = """<!doctype html><meta charset=utf-8><body>
+<div id=open onclick="openD()">建立貼文</div><div id=feed></div>
+<script>
+function openD(){ const d=document.createElement('div'); d.setAttribute('role','dialog'); d.id='dlg';
+  d.innerHTML='<div role=textbox contenteditable=true id=tb></div><button id=pb onclick="doPost()">發佈</button>'; document.body.appendChild(d); }
+async function doPost(){ await fetch('/__post',{method:'POST',body:JSON.stringify({platform:'facebook',texts:[document.getElementById('tb').innerText]})});
+  document.getElementById('dlg').remove(); feed.innerHTML='<div role=article><div>剛發的貼文</div><div role=textbox contenteditable=true aria-label="留言"></div></div>';
+  document.addEventListener('keydown',async e=>{ if(e.key==='Enter' && !e.shiftKey && e.target.getAttribute && e.target.getAttribute('aria-label')==='留言'){ e.preventDefault();
+    await fetch('/__post',{method:'POST',body:JSON.stringify({platform:'facebook',comment:e.target.innerText})}); }}); }
+</script>"""
+
+
 class Mock(BaseHTTPRequestHandler):
     gql_mode = "ok"
     now = int(time.time())
     visits: list = []          # /flash_sale 被開過哪些場次
     bulk: list = []            # /api/v9/bulk_links 每次收到幾個、回應碼
     shop_pages: list = []      # 賣家商店頁 API 被要求過哪些頁
+    social: dict = {"posts": [], "replies": []}
     lock = threading.Lock()
     inflight = peak_attempt = peak_ok = n429 = limit = 0   # /api/v9/single_link：同時進來幾個、被限流幾次
 
@@ -66,14 +97,23 @@ class Mock(BaseHTTPRequestHandler):
             return self._send("ok", "text/plain")
         if u.path == "/__reset":
             Mock.visits, Mock.bulk, Mock.shop_pages = [], [], []
+            Mock.social = {"posts": [], "replies": []}
             Mock.inflight = Mock.peak_attempt = Mock.peak_ok = Mock.n429 = Mock.limit = 0
             return self._send("ok", "text/plain")
         if u.path == "/__limit":
             Mock.limit = int(q["n"][0])
             Mock.peak_attempt = Mock.peak_ok = Mock.n429 = 0
             return self._send("ok", "text/plain")
+        if u.path == "/social/threads":
+            return self._send(SOC_THREADS, "text/html")
+        if u.path == "/social/fb":
+            return self._send(SOC_FB, "text/html")
+        if u.path == "/social/search":
+            return self._send(SOC_SEARCH, "text/html")
+        if u.path.startswith("/social/post/"):
+            return self._send(SOC_POST, "text/html")
         if u.path == "/__log":
-            return self._send(json.dumps({"visits": Mock.visits, "bulk": Mock.bulk, "shop_pages": Mock.shop_pages, "peak_attempt": Mock.peak_attempt,
+            return self._send(json.dumps({"social": Mock.social, "visits": Mock.visits, "bulk": Mock.bulk, "shop_pages": Mock.shop_pages, "peak_attempt": Mock.peak_attempt,
                                           "peak_ok": Mock.peak_ok, "n429": Mock.n429}))
         if u.path == "/":
             return self._send(HOME_HTML, "text/html")
@@ -129,6 +169,9 @@ class Mock(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if u.path in ("/__post", "/__reply"):
+            Mock.social["posts" if u.path == "/__post" else "replies"].append(body)
+            return self._send("{}")
         if u.path == "/api/v4/flash_sale/flash_sale_batch_get_items":
             promo = body["promotionid"]
             base, n, s = self.promo_items(promo)
@@ -269,6 +312,7 @@ def ext_copy(tmp_path_factory, site):
     (d / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
     cfg = (d / "lib" / "config.js").read_text(encoding="utf-8")
     cfg = cfg.replace("https://shopee.tw", site).replace("https://affiliate.shopee.tw", site)
+    cfg = cfg.replace("https://www.threads.com/search", site + "/social/search").replace("https://www.threads.com/", site + "/social/threads")
     cfg = cfg.replace("quietMs: 7000", "quietMs: 1800").replace("searchQuietMs: 4000", "searchQuietMs: 1500")
     (d / "lib" / "config.js").write_text(cfg, encoding="utf-8")
     return d
@@ -642,3 +686,99 @@ def test_pick_products_and_generate_scenario_posts(dash, site):
     assert "已勾選 0 個" in page.inner_text("#selCount")
     page.click("#btnSelAll")
     assert "已勾選 3 個" in page.inner_text("#selCount")
+
+
+def prepare_posts(page, site, keys_with_link=("7.1",)):
+    """兩個商品（7.1 有分潤連結、7.2 沒有）→ 勾選 → 生成文案。"""
+    reset_state(page, site)
+    now = int(__import__("time").time())
+    items = {x["key"]: x for x in [
+        item("7.1", "保溫杯", discountPct=30, price=299, original=427, source="flash", promotionid="9", start=now + 3600, end=now + 7200),
+        item("7.2", "小風扇", discountPct=40, price=199, original=330, source="flash", promotionid="9", start=now + 3600, end=now + 7200),
+    ]}
+    seed(page, items, {k: {"url": "https://s.shopee.tw/AbC", "state": "ok"} for k in keys_with_link})
+    page.wait_for_function("() => document.getElementById('statAll').textContent === '2'")
+    page.click("#tabFlash")
+    page.click("#btnSelAll")
+    page.click("#btnPosts")
+    wait_msg(page, "已產生 2 個商品的文案")
+
+
+def test_publish_to_threads_preview_then_real_and_facebook_with_link_in_comment(dash, site):
+    page = dash
+    prepare_posts(page, site)
+    assert page.is_checked("#pPreview")                                   # 預設就是「只貼好」
+    # 沒有分潤連結的商品不能發
+    page.locator("#postOut details.card", has_text="小風扇").locator("summary").first.click()
+    page.locator("#postOut details.card", has_text="小風扇").locator("[data-post=threads]").first.click()
+    assert "還沒轉成分潤連結" in wait_msg(page, "還沒轉成分潤連結")
+    assert server_log(site)["social"]["posts"] == []
+
+    card = page.locator("#postOut details.card", has_text="保溫杯")
+    card.locator("summary").first.click()
+    card.locator("[data-post=threads]").first.click()
+    assert "停在發佈前" in wait_msg(page, "停在發佈前")
+    assert server_log(site)["social"]["posts"] == []                       # 預覽：沒有真的發
+
+    page.uncheck("#pPreview")
+    card.locator("[data-post=threads]").first.click()
+    assert "已發到 Threads" in wait_msg(page, "已發到 Threads")
+    posts = server_log(site)["social"]["posts"]
+    assert len(posts) == 1 and len(posts[0]["texts"]) == 2
+    assert "https://s.shopee.tw/AbC" not in posts[0]["texts"][0] and "https://s.shopee.tw/AbC" in posts[0]["texts"][1]   # 上面只有文，連結在第二則
+    assert "\n" in posts[0]["texts"][0] and "以上為情境示意" in posts[0]["texts"][0]
+    assert "已發過 Threads" in page.text_content("#postOut")
+
+    page.click("#btnPosts")                                                # 重新產生不會弄丟「已發過」的紀錄
+    wait_msg(page, "已產生")
+    page.fill("#pFb", site + "/social/fb")
+    page.dispatch_event("#pFb", "change")
+    page.locator("#postOut details.card", has_text="保溫杯").locator("summary").first.click()
+    page.locator("#postOut details.card", has_text="保溫杯").locator("[data-post=facebook]").first.click()
+    assert "已發到 Facebook" in wait_msg(page, "已發到 Facebook")
+    log = server_log(site)["social"]["posts"]
+    fb = [x for x in log if x["platform"] == "facebook"]
+    assert "https://s.shopee.tw/AbC" not in fb[0]["texts"][0]               # Facebook 貼文本身沒有連結
+    assert any("https://s.shopee.tw/AbC" in (x.get("comment") or "") for x in fb)   # 連結在留言
+
+
+def test_publish_failure_says_which_step_and_is_in_diagnostics(dash, site):
+    page = dash
+    prepare_posts(page, site)
+    page.fill("#pFb", site + "/")                                          # 這個頁面沒有「建立貼文」
+    page.dispatch_event("#pFb", "change")
+    page.uncheck("#pPreview")
+    card = page.locator("#postOut details.card", has_text="保溫杯")
+    card.locator("summary").first.click()
+    card.locator("[data-post=facebook]").first.click()
+    msg = wait_msg(page, "卡在")
+    assert "卡在「開啟發文框」" in msg and "下載診斷檔" in msg, msg
+    diag = page.evaluate("async () => (await chrome.storage.local.get('socialDiag')).socialDiag")
+    assert diag["stage"] == "開啟發文框" and diag["dump"]["elements"] is not None
+    page.check("#pPreview")
+
+
+def test_threads_search_then_reply_one_by_one_no_links(dash, site):
+    page = dash
+    reset_state(page, site)
+    page.fill("#leadKw", "保溫杯")
+    page.click("#btnLeadSearch")
+    assert "新增 2 篇" in wait_msg(page, "新增 2 篇")
+    assert page.locator("#leadOut [data-lead]").count() == 2
+    page.fill("#lead0", "快看 https://s.shopee.tw/AbC")                    # 不能放連結
+    page.click("#leadOut [data-lead='0']")
+    assert "不能放連結" in wait_msg(page, "不能放連結")
+    page.fill("#lead0", "")
+    page.click("#leadOut [data-lead='0']")
+    assert "空的" in wait_msg(page, "空的")
+    assert server_log(site)["social"]["replies"] == []
+    page.fill("#lead0", "我也在找，推薦先看容量跟保溫時間～")
+    page.click("#leadOut [data-lead='0']")
+    assert "已回覆" in wait_msg(page, "已回覆")
+    rep = server_log(site)["social"]["replies"]
+    assert len(rep) == 1 and rep[0]["text"].startswith("我也在找")          # 只回了按的那一篇
+    assert page.locator("#leadOut [data-lead]").count() == 1                # 回過的不再出現
+    assert page.inner_text("#replyCount") == "1"
+    page.click("#btnLeadSearch")                                           # 再搜一次，同一篇不會重複出現
+    wait_msg(page, "新增 0 篇")
+    assert page.locator("#leadOut [data-lead]").count() == 1

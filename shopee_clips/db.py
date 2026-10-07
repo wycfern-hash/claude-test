@@ -57,35 +57,10 @@ CREATE TABLE IF NOT EXISTS products (
   video_path TEXT NOT NULL DEFAULT '',
   video_title TEXT NOT NULL DEFAULT '',
   video_caption TEXT NOT NULL DEFAULT '',
-  posts TEXT NOT NULL DEFAULT '{}',        -- 臉書/Threads 情境貼文（posts.py）
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   uploaded_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS social_posts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  product_id INTEGER NOT NULL,
-  platform TEXT NOT NULL,                 -- threads | facebook
-  text TEXT NOT NULL DEFAULT '',
-  comment TEXT NOT NULL DEFAULT '',       -- 第一則留言（放分潤連結）
-  status TEXT NOT NULL DEFAULT 'posted',
-  created_at TEXT NOT NULL,
-  posted_at TEXT,
-  UNIQUE(product_id, platform)            -- 一個商品在一個平台只發一次
-);
-CREATE TABLE IF NOT EXISTS social_leads (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  keyword TEXT NOT NULL,
-  url TEXT NOT NULL UNIQUE,               -- 別人的貼文網址（同一篇只出現一次）
-  author TEXT NOT NULL DEFAULT '',
-  text TEXT NOT NULL,
-  draft TEXT NOT NULL DEFAULT '',         -- 回覆草稿（你可以改）
-  status TEXT NOT NULL DEFAULT 'new',     -- new | sent | skipped | failed
-  error TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  sent_at TEXT
 );
 """
 
@@ -112,8 +87,7 @@ BUILTIN_CHARACTERS = [
 ]
 _MIGRATE_COLS = {"products": {"video_mode": "TEXT NOT NULL DEFAULT ''", "character_id": "INTEGER NOT NULL DEFAULT 0",
                               "image_source": "TEXT NOT NULL DEFAULT ''", "ref_notes": "TEXT NOT NULL DEFAULT ''",
-                              "source_url": "TEXT NOT NULL DEFAULT ''", "cloud_url": "TEXT NOT NULL DEFAULT ''",
-                              "posts": "TEXT NOT NULL DEFAULT '{}'"}}
+                              "source_url": "TEXT NOT NULL DEFAULT ''", "cloud_url": "TEXT NOT NULL DEFAULT ''"}}
 
 _KEY_RES = (
     re.compile(r"-i\.(\d+)\.(\d+)"),

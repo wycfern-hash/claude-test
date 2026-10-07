@@ -6,6 +6,7 @@ const C = require('../lib/csv.js');
 const A = require('../lib/affiliate.js');
 const D = require('../lib/dedupe.js');
 const PO = require('../lib/posts.js');
+const SO = require('../lib/social.js');
 
 // ---------------------------------------------------------------- 解析
 test('限時特賣商品（舊格式）：金額 /100000、折扣、場次欄位', () => {
@@ -334,4 +335,21 @@ test('查模型清單：Gemini 只留能 generateContent 的、去掉 models/ �
 test('預設的 Gemini 模型建議不含已下架的 2.5-pro', () => {
   const g = PO.PROVIDERS.find((p) => p[0] === 'gemini')[2];
   assert.ok(g.includes('gemini-3.1-pro-preview') && !g.includes('gemini-2.5-pro'));
+});
+
+test('搜尋後回覆的規則：不能空白、不能放連結、每天上限', async () => {
+  assert.match(SO.checkReply('  '), /空的/);
+  for (const t of ['看 https://s.shopee.tw/AbC', '在這 shp.ee/xyz', 'http://a.b']) assert.match(SO.checkReply(t), /不能放連結/);
+  assert.equal(SO.checkReply('我也在找，推薦先看容量'), '');
+  const now = Date.parse('2026-10-07T10:00:00+08:00');
+  assert.equal(SO.repliedToday([now - 1000, now - 2000, now - 86400e3 * 2], now), 2);
+  assert.equal(SO.REPLY_DAILY_CAP, 20);
+});
+test('回覆草稿：沒選 AI 回傳空字串；有選就用 AI，且提示詞禁止連結與推銷', async () => {
+  assert.equal(await PO.draftReply(null, '好難選', '保溫杯'), '');
+  assert.match(PO.buildReplyPrompt('好難選', '保溫杯'), /不要放任何網址/);
+  const r = await PO.draftReply({ provider: 'openai', model: 'm', key: 'k' }, '好難選', '保溫杯',
+    async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: '{"reply":"我也是選好久😂"}' } }] }) }));
+  assert.equal(r, '我也是選好久😂');
+  assert.equal(await PO.draftReply({ provider: 'openai', model: 'm', key: 'k' }, 'x', 'y', async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'bad' } }) })), '');
 });
