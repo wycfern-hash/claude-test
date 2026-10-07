@@ -275,7 +275,8 @@
         const probe = await chrome.tabs.sendMessage(win.tabId, { cmd: 'probe' }).catch(() => null);
         await chrome.storage.local.set({ diagAffiliate: { at: new Date().toISOString(), via: r.via, gqlErr: r.gqlErr, probe } });
       }
-      const how = !r ? '' : r.via === 'learned' ? `（照你後台的做法，一次最多轉 ${r.batch} 個）`
+      const how = !r ? '' : r.via === 'learned' && r.conc > 1 ? `（這個後台一次只能轉 1 個，所以同時送出 ${r.conc} 個請求，比一個等一個快）`
+        : r.via === 'learned' ? `（照你後台的做法，一次最多轉 ${r.batch} 個）`
         : r.via === 'gql' ? `（一次轉 ${r.batch} 個）`
           : '（用模擬操作一個一個轉，比較慢。建議先按「學習後台做法」手動轉 1 個，之後就能一次轉很多個）';
       setMsg(r && r.ok ? `完成${how}：成功 ${r.done} 個、失敗 ${r.failed} 個。` + (r.failed ? '失敗的會標示原因；可以再按一次重試，或下載診斷檔給我。' : '')

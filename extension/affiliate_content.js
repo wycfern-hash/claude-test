@@ -95,8 +95,46 @@
     return { ok, bad };
   }
 
+  // 後台一次只收 1 個連結時：同時送好幾個請求（不用一個等一個）；被限流（429/403/5xx）就減速、重試
+  async function runSingles(items, tpl) {
+    let conc = 4, done = 0, failed = 0, maxConc = 0;
+    const retries = new Map();
+    const queue = items.slice();
+    while (queue.length) {
+      if (await stopped()) break;
+      const wave = queue.splice(0, conc);
+      maxConc = Math.max(maxConc, wave.length);
+      const settled = await Promise.allSettled(wave.map((it) => viaTemplate(tpl, [it.url])));
+      let limited = false;
+      const redo = [];
+      for (let k = 0; k < wave.length; k++) {
+        const it = wave[k], st = settled[k];
+        if (st.status === 'fulfilled') {
+          const { ok, bad } = await saveResults([it], st.value);
+          done += ok; failed += bad;
+        } else {
+          const msg = (st.reason && st.reason.message) || '失敗';
+          if (/\b(429|403|5\d\d)\b/.test(msg)) limited = true;
+          const n = (retries.get(it.key) || 0) + 1;
+          retries.set(it.key, n);
+          if (n <= 3) redo.push(it);
+          else { failed++; await setAff(it.key, { url: '', state: 'fail', err: msg, at: Date.now() }); }
+        }
+      }
+      if (limited) { conc = Math.max(1, Math.floor(conc / 2)); await sleep(rand(1500, 2500)); }
+      queue.unshift(...redo);
+      chrome.storage.local.set({ progress: { text: `轉換分潤連結 ${done + failed}/${items.length}（成功 ${done}、失敗 ${failed}）`, at: Date.now() } });
+      await sleep(rand(250, 700));
+    }
+    return { done, failed, conc: maxConc };
+  }
+
   async function convert(items) {
     const tpl = (await chrome.storage.local.get('affTemplate')).affTemplate || null;
+    if (tpl && !tpl.batch) {
+      const r = await runSingles(items, tpl);
+      return { ok: true, done: r.done, failed: r.failed, via: 'learned', gqlErr: '', batch: 1, conc: r.conc };
+    }
     let method = tpl ? 'learned' : 'gql';          // learned：照你手動轉時學到的格式；gql：我猜的格式；dom：模擬手動操作
     let steps = tpl && tpl.batch ? SC.CHUNK_STEPS.slice() : [1];
     let size = tpl ? steps[0] : 5, gqlErr = '', done = 0, failed = 0, biggest = 0, i = 0;

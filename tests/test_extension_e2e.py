@@ -32,6 +32,8 @@ class Mock(BaseHTTPRequestHandler):
     now = int(time.time())
     visits: list = []          # /flash_sale 被開過哪些場次
     bulk: list = []            # /api/v9/bulk_links 每次收到幾個、回應碼
+    lock = threading.Lock()
+    inflight = peak_attempt = peak_ok = n429 = limit = 0   # /api/v9/single_link：同時進來幾個、被限流幾次
 
     def log_message(self, *a):
         pass
@@ -63,9 +65,15 @@ class Mock(BaseHTTPRequestHandler):
             return self._send("ok", "text/plain")
         if u.path == "/__reset":
             Mock.visits, Mock.bulk = [], []
+            Mock.inflight = Mock.peak_attempt = Mock.peak_ok = Mock.n429 = Mock.limit = 0
+            return self._send("ok", "text/plain")
+        if u.path == "/__limit":
+            Mock.limit = int(q["n"][0])
+            Mock.peak_attempt = Mock.peak_ok = Mock.n429 = 0
             return self._send("ok", "text/plain")
         if u.path == "/__log":
-            return self._send(json.dumps({"visits": Mock.visits, "bulk": Mock.bulk}))
+            return self._send(json.dumps({"visits": Mock.visits, "bulk": Mock.bulk, "peak_attempt": Mock.peak_attempt,
+                                          "peak_ok": Mock.peak_ok, "n429": Mock.n429}))
         if u.path == "/":
             return self._send(HOME_HTML, "text/html")
         if u.path == "/flash_sale":
@@ -76,7 +84,8 @@ class Mock(BaseHTTPRequestHandler):
         if u.path == "/search":
             return self._send(SEARCH_HTML, "text/html")
         if u.path == "/offer/custom_link":
-            return self._send(AFF_HTML if Mock.gql_mode != "bulk" else AFF_BULK_HTML, "text/html")
+            html = {"bulk": AFF_BULK_HTML, "single": AFF_SINGLE_HTML}.get(Mock.gql_mode, AFF_HTML)
+            return self._send(html, "text/html")
         if u.path == "/api/v4/flash_sale/get_all_sessions":
             return self._send(json.dumps({"error": 0, "data": {"sessions": self.sessions()}}))
         if u.path == "/api/v4/flash_sale/get_all_itemids":
@@ -105,6 +114,23 @@ class Mock(BaseHTTPRequestHandler):
             items = [x for x in mk_items(promo, base, n, s["start_time"], s["end_time"]) if x["itemid"] in body["itemids"]]
             items += [x for x in mk_items(promo, 900, 5, s["start_time"], s["end_time"]) if x["itemid"] in body["itemids"]]
             return self._send(json.dumps({"error": 0, "data": {"items": items}}))
+        if u.path == "/api/v9/single_link":   # 一次只收 1 個，而且同時太多個就 429
+            with Mock.lock:
+                Mock.inflight += 1
+                Mock.peak_attempt = max(Mock.peak_attempt, Mock.inflight)
+                over = Mock.limit and Mock.inflight > Mock.limit
+                if over:
+                    Mock.inflight -= 1
+                    Mock.n429 += 1
+                else:
+                    Mock.peak_ok = max(Mock.peak_ok, Mock.inflight)
+            if over:
+                return self._send(json.dumps({"error": "slow down"}), code=429)
+            time.sleep(0.15)
+            with Mock.lock:
+                Mock.inflight -= 1
+            m = re.search(r"/product/(\d+)/(\d+)", body["link"])
+            return self._send(json.dumps({"short": f"https://s.shopee.tw/S{m.group(1)}_{m.group(2)}"}))
         if u.path == "/api/v9/bulk_links":   # 和我猜的格式完全不同的後台：一次最多收 7 個
             links = body["links"]
             Mock.bulk.append([len(links), 400 if len(links) > 7 else 200])
@@ -174,6 +200,15 @@ document.querySelector('button').onclick = async () => {
   const v = document.querySelector('input').value;
   const r = await fetch('/api/v9/bulk_links', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ links: [{ raw: v }] }) }).then(r => r.json());
   document.getElementById('out').textContent = '您的連結：' + r.results[0].short;
+};
+</script>"""
+AFF_SINGLE_HTML = """<!doctype html><meta charset=utf-8><body><h3>自訂連結（一次只能轉一個的後台）</h3>
+<input type=text placeholder="貼上商品連結" style="width:400px"><button>取得連結</button><div id=out></div>
+<script>
+document.querySelector('button').onclick = async () => {
+  const v = document.querySelector('input').value;
+  const r = await fetch('/api/v9/single_link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ link: v }) }).then(r => r.json());
+  document.getElementById('out').textContent = '您的連結：' + r.short;
 };
 </script>"""
 AFF_HTML = """<!doctype html><meta charset=utf-8><body><h3>自訂連結</h3>
@@ -420,3 +455,36 @@ def test_learns_portal_format_and_converts_in_batches(dash, site):
     page.click("#btnClear")
     page.wait_for_function("() => document.getElementById('statAll').textContent === '0'")
     assert "已學會" in page.inner_text("#affLearn")
+
+
+def test_single_only_portal_sends_concurrent_requests_and_backs_off(dash, site):
+    """後台一次只收 1 個：不要一個等一個，同時送好幾個；後台嫌太快（429）就自動減速重試，最後全部轉完。"""
+    import urllib.request
+    page = dash
+    reset_state(page, site)
+    urllib.request.urlopen(f"{site}/__mode?gql=single").read()
+    page.fill("#flashUrls", f"{site}/flash_sale?promotionId=1")
+    page.fill("#moreSessions", "0")
+    page.click("#btnFlash")
+    wait_msg(page, "完成")
+    assert len(rows(page)) == 40
+
+    portal = page.context.new_page()                                   # 使用者手動轉 1 個 → 學會「這個後台一次只收 1 個」
+    portal.goto(f"{site}/offer/custom_link")
+    portal.fill("input", "https://shopee.tw/product/7/100")
+    portal.click("text=取得連結")
+    portal.wait_for_function("() => document.getElementById('out').textContent.includes('s.shopee.tw')")
+    page.bring_to_front()
+    page.wait_for_function("() => document.getElementById('affLearn').textContent.includes('已學會')", timeout=15000)
+    assert "一次只能轉 1 個" in page.inner_text("#affLearn")
+    portal.close()
+
+    urllib.request.urlopen(f"{site}/__limit?n=2").read()               # 後台同時最多收 2 個，超過就 429
+    page.click("#btnAff")
+    msg = wait_msg(page, "完成.*成功 \\d+ 個", 120000)
+    assert "成功 40 個、失敗 0 個" in msg and "同時送出" in msg, msg
+    log = server_log(site)
+    assert log["peak_attempt"] >= 3                                    # 一開始同時送了好幾個（不是排隊）
+    assert log["n429"] >= 1                                            # 被限流了
+    assert log["peak_ok"] <= 2                                         # 被限流後有減速，沒有硬衝
+    assert all(re.search(r"https://s\.shopee\.tw/S7_\d+", x[5]) for x in rows(page))
