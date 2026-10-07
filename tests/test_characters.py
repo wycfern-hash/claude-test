@@ -485,3 +485,58 @@ def test_web_upload_csv_keeps_suffix(tmp_path, monkeypatch):
     assert n == 1 and any(p.suffix == ".csv" for p in (config.DATA_DIR / "inbox").iterdir())
     assert "新增 1" in "\n".join(worker.log[-5:])
     assert ".csv" in c.get("/").text and "分潤" in c.get("/").text
+
+
+# ---------------------------------------------------------------- 擴充功能匯出的 CSV 可直接匯入；沒有分潤連結要警告
+def _ext_csv_header() -> list[str]:
+    import re as _re
+    src = (Path(__file__).resolve().parent.parent / "extension" / "lib" / "csv.js").read_text(encoding="utf-8")
+    return _re.findall(r"'([^']+)'", _re.search(r"const HEAD = \[(.*?)\];", src, _re.S).group(1))
+
+
+def test_extension_csv_imports_with_affiliate_links(tmp_path):
+    import csv as _csv
+
+    from shopee_clips import sourcing
+
+    head = _ext_csv_header()
+    assert head[:3] == ["商品名稱", "商品連結", "分潤連結"]
+    f = tmp_path / "ext.csv"
+    with open(f, "w", encoding="utf-8-sig", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(head)
+        base = dict.fromkeys(head, "")
+        w.writerow([{**base, "商品名稱": "限時商品", "商品連結": "https://shopee.tw/product/7/100", "分潤連結": "https://s.shopee.tw/G7_100",
+                     "分潤狀態": "已轉換", "價格": "299", "原價": "499", "折扣": "40%", "狀態": "已開始", "來源": "限時特賣",
+                     "圖片連結": "https://down-tw.img.susercontent.com/file/abc"}[h] if h in
+                    ("商品名稱", "商品連結", "分潤連結", "分潤狀態", "價格", "原價", "折扣", "狀態", "來源", "圖片連結") else "" for h in head])
+        w.writerow([{"商品名稱": "還沒轉的", "商品連結": "https://shopee.tw/product/7/101", "分潤狀態": "尚未轉換（不是分潤連結）", "價格": "199"}.get(h, "") for h in head])
+    with db.connect() as conn:
+        res = sourcing.import_file(conn, str(f))
+        a = conn.execute("SELECT * FROM products WHERE shopee_key='7.100'").fetchone()
+        b = conn.execute("SELECT * FROM products WHERE shopee_key='7.101'").fetchone()
+    assert (res["added"], res["failed"], res["no_aff"]) == (2, [], 1)                     # 第二筆沒有分潤連結 → 計入警告
+    assert a["title"] == "限時商品" and a["price"] == "299" and a["source_url"] == "https://s.shopee.tw/G7_100"
+    assert json.loads(a["ref_images"]) == ["https://down-tw.img.susercontent.com/file/abc"]
+    assert b["source_url"] == ""                                                           # 沒分潤連結就是沒有，不會假裝有
+
+
+def test_import_page_warns_when_no_affiliate_links(tmp_path):
+    import time as _t
+
+    from shopee_clips import web
+
+    c = TestClient(web.app)
+    c.post("/import-file", files={"file": ("a.csv", "商品名稱,商品連結\n杯,https://shopee.tw/a-i.1.2\n".encode("utf-8-sig"), "text/csv")})
+    for _ in range(100):
+        if not web.IMPORT["running"]:
+            break
+        _t.sleep(0.05)
+    page = c.get("/import-status").text
+    assert "沒有分潤連結" in page and "不會有分潤" in page and "蝦皮特賣分潤小幫手" in page
+    c.post("/import-file", files={"file": ("b.csv", "商品名稱,商品連結,分潤連結\n風扇,https://shopee.tw/b-i.3.4,https://s.shopee.tw/abc\n".encode("utf-8-sig"), "text/csv")})
+    for _ in range(100):
+        if not web.IMPORT["running"]:
+            break
+        _t.sleep(0.05)
+    assert "沒有分潤連結" not in c.get("/import-status").text

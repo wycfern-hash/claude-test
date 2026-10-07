@@ -74,6 +74,9 @@
 
 （Mac/Linux 用 `./start.sh`。）
 
+## 蝦皮特賣分潤小幫手（Chrome 擴充功能，抓限時特賣商品）
+另外一個獨立的小工具，在 [`extension/`](extension/README.md)：抓**限時特賣**全部商品（含場次日期時間、已開始／倒數）、搜尋**其他特價商品**、轉成**分潤連結**、匯出 CSV（可直接匯入本程式）。安裝與使用請看 [extension/README.md](extension/README.md)。
+
 ## 怎麼用（照首頁的 ①②③④ 做）
 開啟 `http://localhost:8000`，首頁就是步驟引導：
 1. **① 設定 AI 服務**：到「設定」頁，腳本、圖片各選一家服務並填 API key（沒設也能用，但圖要自己上傳）。

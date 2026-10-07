@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<title>蝦皮特賣分潤小幫手</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font:15px/1.5 system-ui,"Microsoft JhengHei",sans-serif;margin:0;background:#f6f6f6;color:#222}
+  header{background:#ee4d2d;color:#fff;padding:12px 20px;font-size:20px;font-weight:700}
+  main{max-width:1200px;margin:0 auto;padding:12px 16px 60px}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:14px 16px;margin:12px 0}
+  .card h3{margin:0 0 8px;font-size:16px}
+  .grid{display:flex;gap:12px;flex-wrap:wrap}.grid>.card{flex:1;min-width:320px;margin:0}
+  label{display:block;margin:6px 0;font-size:13px;color:#555}
+  input[type=text],input[type=number],select{width:100%;box-sizing:border-box;padding:8px;font:inherit;border:1px solid #bbb;border-radius:8px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.row>label{flex:1;min-width:110px;margin:0}
+  button{padding:10px 18px;border-radius:10px;border:2px solid #ee4d2d;background:#ee4d2d;color:#fff;font-size:15px;cursor:pointer}
+  button.g{background:#fff;color:#333;border-color:#888}button.ok{background:#1a9b4b;border-color:#1a9b4b}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  #msg{border-radius:10px;padding:12px 14px;margin:12px 0;font-weight:600;display:none;white-space:pre-wrap}
+  #msg.info{display:block;background:#e8f1fd;border:1px solid #4a8be0}#msg.ok{display:block;background:#e4f6ea;border:1px solid #1a9b4b}
+  #msg.warn{display:block;background:#fff6dc;border:1px solid #d9a400}#msg.err{display:block;background:#fde8e8;border:1px solid #c00}
+  .tabs{display:flex;gap:8px;margin-top:14px}.tabs button{background:#fff;color:#333;border-color:#bbb}.tabs button.on{background:#ee4d2d;color:#fff;border-color:#ee4d2d}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #ddd;border-radius:10px;overflow:hidden}
+  th,td{padding:8px;border-top:1px solid #eee;vertical-align:top;text-align:left;font-size:14px}th{background:#fafafa;font-size:13px}
+  td img{width:64px;height:64px;object-fit:cover;border-radius:8px;background:#eee}
+  s{color:#999}.badge{background:#ee4d2d;color:#fff;border-radius:6px;padding:1px 6px;font-size:12px}
+  .status{font-weight:700;margin-top:2px}.status.live{color:#d63a00}.status.upcoming{color:#0a6bd6}.status.ended{color:#888}
+  .small{color:#777;font-size:12px}.bad{color:#c00}.warnx{color:#c77700}.good{color:#0a8a3a}
+  .stat{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0;font-size:14px}.stat b{font-size:18px}
+</style>
+</head>
+<body>
+<header>蝦皮特賣分潤小幫手</header>
+<main>
+  <div id="msg"></div>
+
+  <div class="card" id="howto">
+    <h3>怎麼用（照 ①②③ 做）</h3>
+    <div class="small">① 抓商品（限時特賣，或搜尋其他特價） → ② 轉成<b>分潤連結</b>（用你登入的分潤後台） → ③ 匯出 CSV / 複製文案。
+    抓取和轉換時會開一個新視窗自動操作，<b>請不要關掉</b>，完成會自動關閉。需要先在這個 Chrome 登入蝦皮（轉換分潤連結還要登入分潤後台）。</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>① 抓「限時特賣」全部商品</h3>
+      <label>限時特賣網址（或場次 ID）
+        <input type="text" id="flashUrl" value="https://shopee.tw/flash_sale?promotionId=497096348680566"></label>
+      <label><input type="checkbox" id="allSessions" checked> 也抓其他場次（今天之後還沒結束的）</label>
+      <button id="btnFlash">開始抓取限時特賣</button>
+    </div>
+    <div class="card">
+      <h3>① 搜尋「其他特價商品」（不在限時特賣裡的）</h3>
+      <div class="row">
+        <label style="flex:2;min-width:160px">關鍵字<input type="text" id="kw" placeholder="例如：泡麵、保溫杯、行動電源"></label>
+        <label>頁數<select id="pages"><option>1</option><option selected>3</option><option>5</option><option>8</option></select></label>
+      </div>
+      <div class="row">
+        <label>排序<select id="sort"><option value="sales">銷量</option><option value="relevancy">相關度</option><option value="ctime">最新</option><option value="price">價格低到高</option></select></label>
+        <label>折扣至少 %<input type="number" id="minPctSearch" value="20" min="0" max="95"></label>
+      </div>
+      <p><button id="btnSearch">搜尋特價商品</button></p>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>② 轉成分潤連結</h3>
+      <div class="small">會用你登入的「蝦皮分潤後台」把下方<b>目前列表</b>的商品轉成分潤短連結。每個約 1~3 秒，轉不成功的會標示原因。</div>
+      <p><button id="btnAff" class="ok">把目前列表轉成分潤連結</button> <button id="btnStop" class="g">停止</button></p>
+    </div>
+    <div class="card">
+      <h3>③ 匯出</h3>
+      <p><button id="btnCsv">匯出 CSV（目前列表）</button> <button id="btnCopy" class="g">複製文案</button></p>
+      <p><button id="btnDiag" class="g">下載診斷檔</button> <button id="btnClear" class="g">清空全部資料</button></p>
+      <div class="small">CSV 的欄位可以直接匯入「蝦皮短影音自動化」程式。診斷檔在抓不到資料時傳給我，我就能修。</div>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div>商品總數 <b id="statAll">0</b></div><div>目前列表 <b id="statShown">0</b></div>
+    <div>已有分潤連結 <b id="statAff" class="good">0</b></div><div>尚未轉換 <b id="statNoAff" class="warnx">0</b></div>
+    <div id="progress" class="small"></div>
+  </div>
+
+  <div class="tabs"><button id="tabFlash" class="on">限時特賣</button><button id="tabOther">其他特價商品</button></div>
+  <div class="card row" id="filters" style="margin-top:8px">
+    <label id="stateWrap">狀態<select id="fState"><option value="">全部</option><option value="live">已開始</option><option value="upcoming">尚未開始</option><option value="ended">已結束</option></select></label>
+    <label>折扣至少 %<input type="number" id="fPct" value="0" min="0" max="95"></label>
+    <label style="flex:2">搜尋商品名稱<input type="text" id="fText"></label>
+    <label><input type="checkbox" id="fAff"> 只看已有分潤連結</label>
+  </div>
+
+  <table>
+    <thead><tr><th></th><th>商品</th><th>價格</th><th id="thWhen">場次時間／狀態</th><th>庫存／已售</th><th>分潤連結</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="small" id="empty">還沒有商品。先按上面的「開始抓取限時特賣」。</p>
+</main>
+<script src="lib/config.js"></script>
+<script src="lib/parse.js"></script>
+<script src="lib/status.js"></script>
+<script src="lib/csv.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

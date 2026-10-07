@@ -273,7 +273,10 @@ def import_status():
     fails = "".join(f"<tr><td>{e(str(w))}</td><td>{e(why)}</td></tr>" for w, why in r["failed"][:30])
     ok = r["added"] > 0
     dup_txt = "，重複略過 %d 個" % r["dup"] if r["dup"] else ""
-    head = (f'<div class="flash ok">✅ 匯入完成：新增 <b>{r["added"]}</b> 個商品{dup_txt}。</div>' if ok else
+    aff_warn = (f'<div class="flash warn">⚠ 其中 <b>{r.get("no_aff", 0)}</b> 個商品沒有分潤連結（檔案裡沒有「分潤連結」欄，或不是 s.shopee.tw 短連結）。'
+                f'上架時標記商品會用一般連結，<b>不會有分潤</b>。請先用「蝦皮特賣分潤小幫手」擴充功能轉成分潤連結，或在分潤後台產生連結後再匯入。</div>'
+                if ok and r.get("no_aff") else "")
+    head = (f'<div class="flash ok">✅ 匯入完成：新增 <b>{r["added"]}</b> 個商品{dup_txt}。</div>{aff_warn}' if ok else
             '<div class="flash err">❌ 沒有匯入任何商品。看下面的原因。</div>')
     nxt = ('<p>下一步：</p><p><a class="btn ok big" href="/">回到首頁，按「開始自動處理」→</a></p>'
            '<p><a class="btn g" href="/list">先看管理列表</a> <a class="btn g" href="/todo">待產圖</a></p>' if ok else

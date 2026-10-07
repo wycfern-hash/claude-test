@@ -113,7 +113,7 @@ def _guess_url_col(rows: list[list[Cell]], hdr_i: int) -> int | None:
 def import_table(conn, rows: list[list[Cell]], label: str = "", progress=None) -> dict:
     """匯入一張表（Excel 工作表或 CSV）。自動辨識表頭；支援商品連結 / 分潤連結 / 商品ID+店鋪ID；
     也會用內容猜哪一欄是連結。回傳 {added, dup, failed:[(位置, 原因)]}。"""
-    res = {"added": 0, "dup": 0, "failed": []}
+    res = {"added": 0, "dup": 0, "failed": [], "no_aff": 0}
     rows = [r for r in rows if any(str(c[0] or "").strip() or c[1] for c in r)]
     where = f"{label} " if label else ""
     hdr_i, cols = None, {}
@@ -168,6 +168,8 @@ def import_table(conn, rows: list[list[Cell]], label: str = "", progress=None) -
             res["dup"] += 1
             continue
         res["added"] += 1
+        if not any(h in original for h in SHORT_HOSTS):  # 不是分潤短連結：上架標記商品時不會有分潤
+            res["no_aff"] += 1
         if get("char") in by_name:  # 「主角」欄填的名稱對得上，就套用
             db.update(conn, pid, character_id=by_name[get("char")])
         if get("src") in ("web", "ai", "上網找", "AI 生成", "AI"):
@@ -182,6 +184,7 @@ def _merge(total: dict, part: dict) -> dict:
     total["added"] += part["added"]
     total["dup"] += part["dup"]
     total["failed"] += part["failed"]
+    total["no_aff"] = total.get("no_aff", 0) + part.get("no_aff", 0)
     return total
 
 
@@ -221,7 +224,7 @@ def import_excel(conn, path: str, progress=None) -> dict:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, data_only=True)
-    res = {"added": 0, "dup": 0, "failed": []}
+    res = {"added": 0, "dup": 0, "failed": [], "no_aff": 0}
     for ws in wb.worksheets:
         rows = [[(c.value if c.value is not None else "", c.hyperlink.target if c.hyperlink and c.hyperlink.target else "")
                  for c in r] for r in ws.iter_rows()]
@@ -237,8 +240,8 @@ def import_file(conn, path: str, progress=None) -> dict:
     if ext in (".csv", ".tsv", ".txt"):
         return import_csv(conn, path, progress)
     if ext == ".xls":
-        return {"added": 0, "dup": 0, "failed": [(Path(path).name, "不支援舊版 .xls，請用 Excel 另存成 .xlsx 或 .csv")]}
-    return {"added": 0, "dup": 0, "failed": [(Path(path).name, f"不認得的檔案類型 {ext or '(無副檔名)'}，請用 .csv 或 .xlsx")]}
+        return {"added": 0, "dup": 0, "no_aff": 0, "failed": [(Path(path).name, "不支援舊版 .xls，請用 Excel 另存成 .xlsx 或 .csv")]}
+    return {"added": 0, "dup": 0, "no_aff": 0, "failed": [(Path(path).name, f"不認得的檔案類型 {ext or '(無副檔名)'}，請用 .csv 或 .xlsx")]}
 
 
 def login() -> None:
