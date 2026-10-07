@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS products (
   video_path TEXT NOT NULL DEFAULT '',
   video_title TEXT NOT NULL DEFAULT '',
   video_caption TEXT NOT NULL DEFAULT '',
+  posts TEXT NOT NULL DEFAULT '{}',        -- 臉書/Threads 情境貼文（posts.py）
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -87,7 +88,8 @@ BUILTIN_CHARACTERS = [
 ]
 _MIGRATE_COLS = {"products": {"video_mode": "TEXT NOT NULL DEFAULT ''", "character_id": "INTEGER NOT NULL DEFAULT 0",
                               "image_source": "TEXT NOT NULL DEFAULT ''", "ref_notes": "TEXT NOT NULL DEFAULT ''",
-                              "source_url": "TEXT NOT NULL DEFAULT ''", "cloud_url": "TEXT NOT NULL DEFAULT ''"}}
+                              "source_url": "TEXT NOT NULL DEFAULT ''", "cloud_url": "TEXT NOT NULL DEFAULT ''",
+                              "posts": "TEXT NOT NULL DEFAULT '{}'"}}
 
 _KEY_RES = (
     re.compile(r"-i\.(\d+)\.(\d+)"),
