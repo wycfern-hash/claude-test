@@ -5,6 +5,7 @@ const S = require('../lib/status.js');
 const C = require('../lib/csv.js');
 const A = require('../lib/affiliate.js');
 const D = require('../lib/dedupe.js');
+const PO = require('../lib/posts.js');
 
 // ---------------------------------------------------------------- 解析
 test('限時特賣商品（舊格式）：金額 /100000、折扣、場次欄位', () => {
@@ -251,4 +252,70 @@ test('合併：同一個商品在多個場次，留還沒結束且最早開始�
   assert.equal(P.mergeItem(item('a', 900, 1500), item('a', 900, 1500, { price: 5 }), now).price, 5);
   assert.equal(P.mergeItem({ key: 'k', source: 'flash' }, { key: 'k', source: 'search' }, now).source, 'flash');
   assert.equal(P.mergeItem(undefined, { key: 'k' }, now).key, 'k');
+});
+
+
+// ---------------------------------------------------------------- 情境文案
+const NOW = 1790000000 * 1000;
+const ROW = { name: '【特價】保溫杯 500ml', price: 299, original: 427, discountPct: 30, start: 1790003600, end: 1790007200, image: 'x', aff: { url: 'https://s.shopee.tw/AbC' } };
+
+test('範本：3 則情境貼文 + Threads；價格、折扣、場次都是抓到的事實，沒有編造', () => {
+  const d = PO.templatePosts(ROW, S, NOW);
+  assert.deepEqual(d.posts.map((p) => p.style), ['story', 'dialog', 'pain']);
+  assert.ok(d.threads);
+  const all = d.posts.map((p) => p.text).join('\n');
+  assert.match(all, /\$299/); assert.match(all, /\$427/); assert.match(all, /30% off/);
+  assert.match(all, /限時特賣/);
+  assert.doesNotMatch(all, /最低價|回購|用了.*個月|保證/);
+  assert.match(d.posts[1].text, /^A：/);
+});
+test('場次已結束就不提時間', () => {
+  const d = PO.templatePosts({ ...ROW, start: 1, end: 2 }, S, NOW);
+  assert.doesNotMatch(d.posts.map((p) => p.text).join(''), /限時特賣/);
+});
+test('連結：只用分潤連結；沒有就放提示，不會用一般網址', () => {
+  const it = { text: '正文', comment: '看這' };
+  assert.match(PO.compose(ROW, it, true, PO.DEFAULT_DISCLOSURE), /AbC[\s\S]*分潤連結，經由連結購買/);
+  assert.doesNotMatch(PO.compose(ROW, it, false, PO.DEFAULT_DISCLOSURE), /AbC/);
+  const noAff = { ...ROW, aff: null, url: 'https://shopee.tw/product/1/2' };
+  const t = PO.compose(noAff, it, true, '');
+  assert.ok(t.includes(PO.PLACEHOLDER) && !t.includes('shopee.tw/product'));
+  assert.ok(PO.composeComment(noAff, it).includes(PO.PLACEHOLDER));
+});
+test('AI 提示詞：只給事實、禁止編造、不要網址', () => {
+  const p = PO.buildPrompt(ROW, S, NOW);
+  assert.match(p, /商品名稱：【特價】保溫杯 500ml/); assert.match(p, /特價：\$299/);
+  assert.match(p, /不要編造/); assert.match(p, /不要放任何網址/); assert.match(p, /功能、成分、規格/);
+});
+const AI = { posts: [{ style: 'story', text: 'S', comment: 'c' }, { style: 'dialog', text: 'D' }, { style: 'pain', text: 'P' }], threads: 'T' };
+function mockFetch(check, body, ok = true) {
+  return async (url, opt) => { check(url, opt); return { ok, status: ok ? 200 : 401, json: async () => body }; };
+}
+test('三家 AI 都能呼叫並解析（用假的 fetch）', async () => {
+  const g = await PO.callAI({ provider: 'gemini', model: 'm', key: 'K' }, 'p', mockFetch((u, o) => {
+    assert.match(u, /generativelanguage.*models\/m:generateContent/); assert.equal(o.headers['x-goog-api-key'], 'K');
+  }, { candidates: [{ content: { parts: [{ text: JSON.stringify(AI) }] } }] }));
+  assert.equal(g.threads, 'T');
+  const o = await PO.callAI({ provider: 'openai', model: 'm', key: 'K' }, 'p', mockFetch((u, op) => {
+    assert.match(u, /api.openai.com/); assert.equal(op.headers.authorization, 'Bearer K');
+  }, { choices: [{ message: { content: '```json\n' + JSON.stringify(AI) + '\n```' } }] }));
+  assert.equal(o.posts.length, 3);
+  const c = await PO.callAI({ provider: 'claude', model: 'm', key: 'K' }, 'p', mockFetch((u, op) => {
+    assert.match(u, /api.anthropic.com/); assert.equal(op.headers['x-api-key'], 'K');
+  }, { content: [{ text: JSON.stringify(AI) }] }));
+  assert.equal(c.posts[2].text, 'P');
+});
+test('沒填 key／模型會明確報錯；AI 失敗退回範本並標記原因', async () => {
+  await assert.rejects(PO.callAI({ provider: 'gemini', model: '', key: 'K' }, 'p', async () => ({})), /模型/);
+  const d = await PO.generate(ROW, { provider: 'openai', model: 'm', key: 'bad' }, S, NOW, mockFetch(() => {}, { error: { message: 'bad key' } }, false));
+  assert.equal(d.by, 'template'); assert.match(d.aiError, /bad key/); assert.equal(d.posts.length, 3);
+  const ok = await PO.generate(ROW, { provider: 'openai', model: 'm', key: 'k' }, S, NOW, mockFetch(() => {}, { choices: [{ message: { content: JSON.stringify(AI) } }] }));
+  assert.equal(ok.by, 'openai'); assert.equal(ok.posts[0].text, 'S');
+  assert.equal((await PO.generate(ROW, null, S, NOW)).by, 'template');
+});
+test('文案 CSV：每則一列、含 Threads、欄位正確跳脫', () => {
+  const csv = PO.postsToCsv([{ row: ROW, data: { ...PO.templatePosts(ROW, S, NOW), by: 'template' } }], PO.DEFAULT_DISCLOSURE);
+  assert.ok(csv.startsWith('\ufeff商品名稱,風格,'));
+  assert.equal((csv.match(/Threads 短文/g) || []).length, 1);
+  assert.ok(csv.includes('生活小故事') && csv.includes('對話情境劇') && csv.includes('痛點共鳴') && csv.includes('https://s.shopee.tw/AbC'));
 });

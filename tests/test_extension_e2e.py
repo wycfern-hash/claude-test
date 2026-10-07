@@ -297,7 +297,7 @@ def wait_msg(page, pattern, timeout=120000):
 
 
 def rows(page):
-    return page.eval_on_selector_all("#rows tr", "trs => trs.map(t => [...t.children].map(td => td.innerText))")
+    return page.eval_on_selector_all("#rows tr", "trs => trs.map(t => [...t.children].slice(1).map(td => td.innerText))")
 
 
 def test_full_flow(dash, site):
@@ -602,3 +602,43 @@ def test_clear_duplicates_with_undo(dash, site):
     assert len(rows(page)) == 6
     page.click("#btnDedupe")
     assert "沒有找到重複" not in page.inner_text("#msg") or True
+
+
+def test_pick_products_and_generate_scenario_posts(dash, site):
+    page = dash
+    reset_state(page, site)
+    now = int(__import__("time").time())
+    items = {x["key"]: x for x in [
+        item("7.1", "【特價】保溫杯 500ml", discountPct=30, price=299, original=427, source="flash", promotionid="9", start=now + 3600, end=now + 7200),
+        item("7.2", "小風扇", discountPct=40, price=199, original=330, source="flash", promotionid="9", start=now + 3600, end=now + 7200),
+        item("7.3", "沒勾選的商品", discountPct=20, source="flash", promotionid="9", start=now + 3600, end=now + 7200),
+    ]}
+    seed(page, items, {"7.1": {"url": "https://s.shopee.tw/AbC", "state": "ok"}})
+    page.wait_for_function("() => document.getElementById('statAll').textContent === '3'")
+    page.click("#tabFlash")
+    page.click("#btnPosts")                                              # 沒勾選 → 要提醒
+    assert "還沒有勾選" in wait_msg(page, "還沒有勾選")
+    page.check("tr:has-text('保溫杯') input[data-sel]")
+    page.check("tr:has-text('小風扇') input[data-sel]")
+    assert "已勾選 2 個" in page.inner_text("#selCount")
+    page.click("#btnPosts")
+    msg = wait_msg(page, "已產生 2 個商品的文案")
+    assert "1 個還沒有分潤連結" in msg, msg                              # 小風扇還沒轉
+    texts = page.eval_on_selector_all("#postOut textarea", "ts => ts.map(t => t.value)")
+    assert len(texts) == 2 * (3 * 3 + 1)                                  # 每商品 3 則 ×（含連結/不含/留言）+ Threads
+    with_link = [t for t in texts if "保溫杯" in t and "https://s.shopee.tw/AbC" in t and "分潤連結" in t]
+    assert with_link, texts[:3]
+    assert not any("沒勾選" in t for t in texts)
+    fan = [t for t in texts if "小風扇" in t and "👉 商品連結：" in t]
+    assert fan and all("還沒有分潤連結" in t and "shopee.tw/product" not in t for t in fan)   # 沒分潤連結絕不放一般網址
+    assert all("以上為情境示意" in t and "內含蝦皮分潤連結" in t for t in with_link + fan)   # 含連結的貼文都有揭露
+    # 匯出 CSV
+    with page.expect_download() as dl:
+        page.click("#btnPostsCsv")
+    csv_text = open(dl.value.path(), encoding="utf-8-sig").read()
+    assert csv_text.startswith("商品名稱,風格,") and "Threads 短文" in csv_text and "https://s.shopee.tw/AbC" in csv_text
+    # 全選 / 全不選
+    page.click("#btnSelNone")
+    assert "已勾選 0 個" in page.inner_text("#selCount")
+    page.click("#btnSelAll")
+    assert "已勾選 3 個" in page.inner_text("#selCount")

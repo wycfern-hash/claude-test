@@ -98,6 +98,25 @@
     </div>
   </div>
 
+  <div class="card" id="postCard">
+    <h3>④ 情境文案（挑商品 → 生成文案 → 貼到其他地方）</h3>
+    <div class="small">在下方商品表格<b>最左邊打勾</b>挑商品（或按「全選目前列表」），按「生成情境文案」。每個商品會產出 3 則<b>情境劇</b>貼文（生活小故事／對話／痛點共鳴）＋ 1 則短文，各有「含分潤連結」「不含連結」「留言區文字」可以一鍵複製。
+    只會用抓到的事實（名稱、特價、原價、折扣、場次時間），情境與人物是虛構示意，不會編造使用心得或功能。</div>
+    <div class="row" style="margin-top:8px">
+      <label>寫文案用的 AI<select id="pProvider"><option value="">不用 AI（範本，免費，比較制式）</option></select></label>
+      <label>模型<input type="text" id="pModel" list="pModels" autocomplete="off" placeholder="點一下選，或自己輸入"></label>
+      <label>API key（只存在這個瀏覽器）<input type="password" id="pKey" autocomplete="off" placeholder="選了 AI 才需要"></label>
+    </div>
+    <datalist id="pModels"></datalist>
+    <label style="display:block;margin-top:8px">貼文最後的揭露文字（建議保留；清空就不加）<input type="text" id="pDisc" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #bbb;border-radius:8px"></label>
+    <p><button id="btnSelAll" class="g">全選目前列表</button> <button id="btnSelNone" class="g">全不選</button>
+      <b id="selCount" style="margin:0 8px">已勾選 0 個</b>
+      <button id="btnPosts" class="ok">生成情境文案</button>
+      <button id="btnPostsCsv" class="g">匯出文案 CSV</button> <button id="btnPostsCopy" class="g">複製全部文案</button></p>
+    <div id="postMsg" class="small"></div>
+    <div id="postOut"></div>
+  </div>
+
   <div class="stat">
     <div>商品總數 <b id="statAll">0</b></div><div>目前列表 <b id="statShown">0</b></div>
     <div>已有分潤連結 <b id="statAff" class="good">0</b></div><div>尚未轉換 <b id="statNoAff" class="warnx">0</b></div>
@@ -120,7 +139,7 @@
   </div>
 
   <table>
-    <thead><tr><th></th><th>商品</th><th>價格</th><th id="thWhen">場次時間／狀態</th><th>庫存／已售</th><th>分潤連結</th></tr></thead>
+    <thead><tr><th><input type="checkbox" id="selAll" title="全選／全不選目前列表"></th><th></th><th>商品</th><th>價格</th><th id="thWhen">場次時間／狀態</th><th>庫存／已售</th><th>分潤連結</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <p class="small" id="empty">還沒有商品。先按上面的「開始抓取限時特賣」。</p>
@@ -130,6 +149,7 @@
 <script src="lib/status.js"></script>
 <script src="lib/csv.js"></script>
 <script src="lib/dedupe.js"></script>
+<script src="lib/posts.js"></script>
 <script src="dashboard.js"></script>
 </body>
 </html>

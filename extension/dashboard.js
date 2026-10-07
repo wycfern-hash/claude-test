@@ -4,7 +4,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const money = (v) => (v == null ? '—' : '$' + Number(v).toLocaleString('zh-TW'));
-  const S = { items: {}, sessions: {}, aff: {}, diag: [], progress: null, tab: 'flash', busy: false, stopCapture: false };
+  const S = { items: {}, sessions: {}, aff: {}, diag: [], progress: null, tab: 'flash', busy: false, stopCapture: false, sel: {}, posts: {}, pcfg: {} };
 
   function setMsg(text, kind = 'info') { const m = $('msg'); m.textContent = text; m.className = text ? kind : ''; }
   function setBusy(b) {
@@ -14,11 +14,13 @@
 
   // ------------------------------------------------------------ 資料
   async function load() {
-    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate', 'lastRemoved']);
+    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate', 'lastRemoved', 'postsStore', 'postCfg']);
+    S.posts = g.postsStore || {}; S.pcfg = g.postCfg || {};
     S.tpl = g.affTemplate || null;
     S.removed = g.lastRemoved || null;
     S.items = g.items || {}; S.sessions = g.sessions || {}; S.aff = g.aff || {}; S.diag = g.diag || []; S.progress = g.progress || null;
     render();
+    renderPostCfg(); renderPosts();
   }
   let renderTimer = null;
   chrome.storage.onChanged.addListener((ch, area) => {
@@ -27,7 +29,7 @@
     if (ch.lastRemoved) { S.removed = ch.lastRemoved.newValue || null; renderDup(); }
     for (const k of ['items', 'sessions', 'aff', 'diag', 'progress']) if (ch[k]) S[k] = ch[k].newValue || (k === 'diag' ? [] : k === 'progress' ? null : {});
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(render, 250);
+    renderTimer = setTimeout(() => { render(); if (ch.aff) renderPosts(); }, 250);
   });
 
   function viewRows() {
@@ -90,12 +92,15 @@
     $('empty').textContent = all.length ? '這個條件下沒有商品，調整上面的篩選看看。'
       : (flash ? '還沒有商品。先按上面的「開始抓取限時特賣」。' : '還沒有商品。先在上面輸入關鍵字搜尋特價商品。');
     $('rows').innerHTML = rows.map((r) => `<tr>
+      <td><input type="checkbox" data-sel="${esc(r.key)}" ${S.sel[r.key] ? 'checked' : ''}></td>
       <td>${r.image ? `<img loading="lazy" src="${esc(r.image)}" alt="">` : ''}</td>
       <td><span class="srcTag">${SRC_ZH[r.source] || ''}</span><a href="${esc(r.url)}" target="_blank">${esc(r.name)}</a><div class="small">${esc(r.key)}</div></td>
       <td><b>${money(r.price)}</b> ${r.original ? `<s>${money(r.original)}</s>` : ''} ${r.discountPct ? `<span class="badge">-${r.discountPct}%</span>` : ''}</td>
       <td>${flash ? `${esc(SC.fmtRange(r.start, r.end))}<div class="status" data-start="${r.start || ''}" data-end="${r.end || ''}"></div>` : '—'}</td>
       <td>${r.stock == null ? '—' : r.stock} / ${r.sold == null ? '—' : r.sold}</td>
       <td>${affCell(r)}</td></tr>`).join('');
+    $('selAll').checked = rows.length > 0 && rows.every((r) => S.sel[r.key]);
+    renderSel();
     tick();
   }
   function tick() {
@@ -445,6 +450,95 @@
     setMsg('已下載診斷檔，把它傳給我。', 'ok');
   }
 
+  // ------------------------------------------------------------ ④ 情境文案
+  const selectedRows = () => viewRows().filter((r) => S.sel[r.key]);
+  function renderSel() { $('selCount').textContent = `已勾選 ${selectedRows().length} 個`; }
+  function renderPostCfg() {
+    const sel = $('pProvider');
+    if (sel.options.length === 1) for (const [v, zh] of SC.PROVIDERS) sel.add(new Option(zh, v));
+    if (document.activeElement !== sel) sel.value = S.pcfg.provider || '';
+    const prov = SC.PROVIDERS.find((p) => p[0] === sel.value);
+    $('pModels').innerHTML = prov ? prov[2].map((m) => `<option value="${esc(m)}">`).join('') : '';
+    if (document.activeElement !== $('pModel')) $('pModel').value = S.pcfg.model || '';
+    if (document.activeElement !== $('pKey')) $('pKey').value = S.pcfg.key || '';
+    if (document.activeElement !== $('pDisc')) $('pDisc').value = S.pcfg.disclosure == null ? SC.DEFAULT_DISCLOSURE : S.pcfg.disclosure;
+    $('pModel').disabled = $('pKey').disabled = !prov;
+  }
+  async function savePostCfg(providerChanged) {
+    const cur = { provider: $('pProvider').value, model: $('pModel').value.trim(), key: $('pKey').value.trim(), disclosure: $('pDisc').value };
+    if (providerChanged) cur.model = '';                   // 換一家就不沿用上一家的模型名稱
+    S.pcfg = cur;
+    await chrome.storage.local.set({ postCfg: cur });
+    renderPostCfg();
+  }
+  const copyBox = (id, label, text, rows) => `<div style="margin:6px 0"><b class="small">${esc(label)}</b>
+    <textarea id="${id}" rows="${rows || 6}" readonly style="width:100%;box-sizing:border-box;padding:8px;font:inherit;border:1px solid #bbb;border-radius:8px">${esc(text)}</textarea>
+    <button class="g" data-copyid="${id}" style="padding:3px 10px;font-size:12px">複製</button></div>`;
+  function renderPosts() {
+    const rowsByKey = Object.fromEntries(viewRows().map((r) => [r.key, r]));
+    const disc = $('pDisc').value;
+    const html = Object.entries(S.posts).filter(([k]) => rowsByKey[k]).map(([k, d], n) => {
+      const r = rowsByKey[k];
+      const warn = SC.linkOf(r) ? '' : '<div class="bad small">⚠ 這個商品還沒轉成分潤連結，文案裡會先放提示文字；請先按上方「②」轉換後再複製。</div>';
+      const note = d.aiError ? `<div class="warnx small">AI 失敗（${esc(d.aiError)}），這份改用範本。</div>` : '';
+      const inner = d.posts.map((it, i) => `<details ${i === 0 ? 'open' : ''}><summary>${esc(SC.styleZh(it.style))}</summary>`
+        + copyBox(`po${n}_${i}`, '貼文（含分潤連結）', SC.compose(r, it, true, disc))
+        + copyBox(`po${n}_${i}n`, '貼文（不含連結，連結放留言區用）', SC.compose(r, it, false, disc))
+        + copyBox(`po${n}_${i}c`, '留言區文字', SC.composeComment(r, it), 2) + '</details>').join('')
+        + (d.threads ? `<details><summary>Threads 短文</summary>${copyBox(`po${n}_t`, 'Threads', d.threads + (SC.linkOf(r) ? '\n' + SC.linkOf(r) : ''), 3)}</details>` : '');
+      return `<details class="card" style="margin:8px 0"><summary><b>${esc(r.name.slice(0, 40))}</b> <span class="small">${d.by === 'template' ? '範本' : 'AI'}</span></summary>${warn}${note}${inner}</details>`;
+    }).join('');
+    $('postOut').innerHTML = html;
+  }
+  async function generatePosts() {
+    const rows = selectedRows();
+    if (!rows.length) { setMsg('還沒有勾選商品：在下方表格最左邊打勾，或按「全選目前列表」。', 'warn'); return; }
+    const cfg = { provider: $('pProvider').value, model: $('pModel').value.trim(), key: $('pKey').value.trim() };
+    if (cfg.provider && (!cfg.key || !cfg.model)) { setMsg('你選了 AI，請把「模型」和「API key」填好；或把「寫文案用的 AI」改成「不用 AI（範本）」。', 'warn'); return; }
+    await savePostCfg(false);
+    const noAff = rows.filter((r) => !SC.linkOf(r)).length;
+    $('btnPosts').disabled = true;
+    let done = 0, aiFail = 0, idx = 0;
+    const worker = async () => {
+      while (idx < rows.length) {
+        const r = rows[idx++];
+        const d = await SC.generate(r, cfg.provider ? cfg : null, SC, Date.now());
+        if (d.aiError) aiFail++;
+        S.posts[r.key] = { ...d, at: Date.now() };
+        done++;
+        $('postMsg').textContent = `產生中… ${done} / ${rows.length}`;
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: cfg.provider ? 3 : 1 }, worker));
+      await chrome.storage.local.set({ postsStore: S.posts });
+      renderPosts();
+      $('postMsg').textContent = '';
+      setMsg(`已產生 ${done} 個商品的文案。` + (noAff ? `其中 ${noAff} 個還沒有分潤連結（文案裡會放提示，請先轉換）。` : '') + (aiFail ? `AI 失敗 ${aiFail} 個，已改用範本。第一個錯誤請看該商品下方的提示。` : ''), noAff || aiFail ? 'warn' : 'ok');
+    } finally { $('btnPosts').disabled = false; }
+  }
+  function postEntries() {
+    const rowsByKey = Object.fromEntries(viewRows().map((r) => [r.key, r]));
+    const sel = selectedRows().filter((r) => S.posts[r.key]);
+    const keys = sel.length ? sel.map((r) => r.key) : Object.keys(S.posts).filter((k) => rowsByKey[k]);
+    return keys.map((k) => ({ row: rowsByKey[k], data: S.posts[k] }));
+  }
+  function exportPostsCsv() {
+    const ent = postEntries();
+    if (!ent.length) { setMsg('還沒有產生過文案：先勾選商品再按「生成情境文案」。', 'warn'); return; }
+    download(`shopee_posts_${stamp()}.csv`, SC.postsToCsv(ent, $('pDisc').value), 'text/csv;charset=utf-8');
+    setMsg(`已匯出 ${ent.length} 個商品的文案。`, 'ok');
+  }
+  async function copyAllPosts() {
+    const ent = postEntries();
+    if (!ent.length) { setMsg('還沒有產生過文案。', 'warn'); return; }
+    const disc = $('pDisc').value;
+    const text = ent.map(({ row, data }) => `【${row.name}】\n\n` + data.posts.map((it) => `── ${SC.styleZh(it.style)} ──\n${SC.compose(row, it, true, disc)}`).join('\n\n'))
+      .join('\n\n==========\n\n');
+    await navigator.clipboard.writeText(text);
+    setMsg(`已複製 ${ent.length} 個商品的全部文案。`, 'ok');
+  }
+
   function syncTabs() { $('tabFlash').className = S.tab === 'flash' ? 'on' : ''; $('tabOther').className = S.tab === 'other' ? 'on' : ''; render(); }
 
   // ------------------------------------------------------------ 綁定
@@ -464,13 +558,34 @@
     await chrome.windows.create({ url: SC.config.affiliateBase + SC.config.customLinkPath, type: 'normal', width: 1100, height: 850, focused: true });
     setMsg('請在剛開的分潤後台視窗：貼一個蝦皮商品連結，按「取得連結」，看到短連結就好（不用關視窗）。回到這裡，「分潤後台做法」會變成「已學會 ✓」。', 'info');
   });
+  $('rows').addEventListener('change', (ev) => {
+    const c = ev.target.closest('[data-sel]');
+    if (!c) return;
+    if (c.checked) S.sel[c.dataset.sel] = true; else delete S.sel[c.dataset.sel];
+    $('selAll').checked = currentRows().every((r) => S.sel[r.key]);
+    renderSel();
+  });
+  $('selAll').addEventListener('change', () => { for (const r of currentRows()) { if ($('selAll').checked) S.sel[r.key] = true; else delete S.sel[r.key]; } render(); });
+  $('btnSelAll').addEventListener('click', () => { for (const r of currentRows()) S.sel[r.key] = true; render(); });
+  $('btnSelNone').addEventListener('click', () => { S.sel = {}; render(); });
+  $('pProvider').addEventListener('change', () => savePostCfg(true));
+  for (const id of ['pModel', 'pKey', 'pDisc']) $(id).addEventListener('change', () => savePostCfg(false));
+  $('btnPosts').addEventListener('click', () => generatePosts().catch((e) => { setMsg('❌ ' + e.message, 'err'); $('btnPosts').disabled = false; }));
+  $('btnPostsCsv').addEventListener('click', exportPostsCsv);
+  $('btnPostsCopy').addEventListener('click', copyAllPosts);
+  $('postOut').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-copyid]');
+    if (!b) return;
+    await navigator.clipboard.writeText($(b.dataset.copyid).value);
+    b.textContent = '已複製 ✓';
+  });
   $('btnCsv').addEventListener('click', exportCsv);
   $('btnCopy').addEventListener('click', copyText);
   $('btnDiag').addEventListener('click', downloadDiag);
   $('btnClear').addEventListener('click', async () => {
     if (!confirm('確定清空所有已抓的商品與分潤連結嗎？')) return;
-    const keep = await chrome.storage.local.get('affTemplate');        // 學會的後台做法保留，不用重學
-    await chrome.storage.local.clear(); if (keep.affTemplate) await chrome.storage.local.set(keep);
+    const keep = await chrome.storage.local.get(['affTemplate', 'postCfg']);        // 學會的後台做法、文案設定（含 key）保留，不用重填
+    await chrome.storage.local.clear(); await chrome.storage.local.set(keep); S.sel = {}; S.posts = {};
     await load(); setMsg('已清空（已學會的分潤後台做法會保留）。', 'ok');
   });
   $('tabFlash').addEventListener('click', () => { S.tab = 'flash'; syncTabs(); });

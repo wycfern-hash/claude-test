@@ -1,15 +1,18 @@
 {
   "manifest_version": 3,
   "name": "蝦皮特賣分潤小幫手",
-  "version": "1.1.0",
-  "description": "抓蝦皮限時特賣與特價商品（含場次日期時間、開賣倒數），用你登入的分潤後台一鍵轉成分潤連結，並匯出 CSV。",
+  "version": "1.2.0",
+  "description": "抓蝦皮限時特賣與特價商品（含場次日期時間、開賣倒數），用你登入的分潤後台一鍵轉成分潤連結，並匯出 CSV；可替勾選的商品生成情境文案。",
   "permissions": [
     "storage",
     "tabs"
   ],
   "host_permissions": [
     "https://shopee.tw/*",
-    "https://affiliate.shopee.tw/*"
+    "https://affiliate.shopee.tw/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*"
   ],
   "background": {
     "service_worker": "background.js"
