@@ -9,13 +9,14 @@
   function setMsg(text, kind = 'info') { const m = $('msg'); m.textContent = text; m.className = text ? kind : ''; }
   function setBusy(b) {
     S.busy = b;
-    for (const id of ['btnFlash', 'btnSearch', 'btnAff', 'btnClear']) $(id).disabled = b;
+    for (const id of ['btnFlash', 'btnSearch', 'btnShop', 'btnAff', 'btnClear', 'btnDedupe']) $(id).disabled = b;
   }
 
   // ------------------------------------------------------------ 資料
   async function load() {
-    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate']);
+    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate', 'lastRemoved']);
     S.tpl = g.affTemplate || null;
+    S.removed = g.lastRemoved || null;
     S.items = g.items || {}; S.sessions = g.sessions || {}; S.aff = g.aff || {}; S.diag = g.diag || []; S.progress = g.progress || null;
     render();
   }
@@ -23,6 +24,7 @@
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
     if (ch.affTemplate) { S.tpl = ch.affTemplate.newValue || null; renderLearn(); }
+    if (ch.lastRemoved) { S.removed = ch.lastRemoved.newValue || null; renderDup(); }
     for (const k of ['items', 'sessions', 'aff', 'diag', 'progress']) if (ch[k]) S[k] = ch[k].newValue || (k === 'diag' ? [] : k === 'progress' ? null : {});
     clearTimeout(renderTimer);
     renderTimer = setTimeout(render, 250);
@@ -34,15 +36,17 @@
       return { ...it, start: it.start || (ses && ses.start) || null, end: it.end || (ses && ses.end) || null, aff: S.aff[it.key] || null };
     });
   }
+  function tabRows() {                      // 目前這個分頁的商品（還沒套用上面的篩選）
+    const rows = viewRows();
+    return S.tab === 'flash' ? rows.filter((r) => r.source === 'flash') : rows.filter((r) => r.source !== 'flash' && r.discountPct > 0);
+  }
   function currentRows() {
     const now = Date.now();
     const minPct = +$('fPct').value || 0;
     const text = $('fText').value.trim().toLowerCase();
     const st = $('fState').value;
     const onlyAff = $('fAff').checked;
-    let rows = viewRows();
-    if (S.tab === 'flash') rows = rows.filter((r) => r.source === 'flash');
-    else rows = rows.filter((r) => r.source !== 'flash' && r.discountPct > 0);
+    let rows = tabRows();
     rows = rows.filter((r) => r.discountPct >= minPct && (!text || r.name.toLowerCase().includes(text)) && (!onlyAff || (r.aff && r.aff.url)));
     if (S.tab === 'flash' && st) rows = rows.filter((r) => SC.sessionStatus(r.start, r.end, now).state === st);
     rows.sort((a, b) => (S.tab === 'flash'
@@ -64,8 +68,15 @@
       ? `分潤後台做法：<b class="good">已學會 ✓</b>（${S.tpl.batch ? '可以一次轉很多個' : '這個後台一次只能轉 1 個'}）`
       : '分潤後台做法：<b class="warnx">還沒學會</b>（會先用猜的；猜不中就一個一個轉，比較慢）';
   }
+  function renderDup() {
+    const n = S.removed ? Object.keys(S.removed.items || {}).length : 0;
+    $('dupInfo').textContent = n ? `可以復原上次清除的 ${n} 個商品` : '';
+    $('btnUndo').disabled = !n;
+  }
+  const SRC_ZH = { flash: '限時特賣', search: '搜尋', shop: '賣場', other: '其他' };
   function render() {
     renderLearn();
+    renderDup();
     const all = viewRows();
     const rows = currentRows();
     const withAff = all.filter((r) => r.aff && r.aff.url).length;
@@ -80,7 +91,7 @@
       : (flash ? '還沒有商品。先按上面的「開始抓取限時特賣」。' : '還沒有商品。先在上面輸入關鍵字搜尋特價商品。');
     $('rows').innerHTML = rows.map((r) => `<tr>
       <td>${r.image ? `<img loading="lazy" src="${esc(r.image)}" alt="">` : ''}</td>
-      <td><a href="${esc(r.url)}" target="_blank">${esc(r.name)}</a><div class="small">${esc(r.key)}</div></td>
+      <td><span class="srcTag">${SRC_ZH[r.source] || ''}</span><a href="${esc(r.url)}" target="_blank">${esc(r.name)}</a><div class="small">${esc(r.key)}</div></td>
       <td><b>${money(r.price)}</b> ${r.original ? `<s>${money(r.original)}</s>` : ''} ${r.discountPct ? `<span class="badge">-${r.discountPct}%</span>` : ''}</td>
       <td>${flash ? `${esc(SC.fmtRange(r.start, r.end))}<div class="status" data-start="${r.start || ''}" data-end="${r.end || ''}"></div>` : '—'}</td>
       <td>${r.stock == null ? '—' : r.stock} / ${r.sold == null ? '—' : r.sold}</td>
@@ -123,7 +134,9 @@
   async function onExpectedPage(tabId, expectPath) {
     await sleep(1200);                       // 給蝦皮一點時間做轉址
     const r = await ping(tabId);
-    return { ok: new URL(r.url).pathname.startsWith(expectPath), url: r.url };
+    const p = new URL(r.url).pathname;
+    const list = [].concat(expectPath);
+    return { ok: list.some((e) => p.startsWith(e)) && !(p === '/' && !list.includes('/')), url: r.url };
   }
   async function gotoAndScroll(tabId, url, maxMs, quietMs, expectPath) {
     await chrome.tabs.update(tabId, { url });
@@ -253,6 +266,110 @@
     }
   }
 
+  // ------------------------------------------------------------ ① 抓「賣場特價品」（賣家商店頁）
+  async function pruneShopRun(runId, minPct, pathShopId) {
+    const items = (await chrome.storage.local.get('items')).items || {};
+    const mine = Object.values(items).filter((x) => x.shopRun === runId && x.source === 'shop');
+    const cnt = {};
+    for (const x of mine) cnt[x.shopid] = (cnt[x.shopid] || 0) + 1;
+    const dominant = pathShopId || Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    let kept = 0, removed = 0;
+    for (const x of mine) {                  // 商店頁底下的「推薦其他賣家」、沒打折的都不要
+      if (String(x.shopid) !== String(dominant) || (x.discountPct || 0) < minPct) { delete items[x.key]; removed++; } else kept++;
+    }
+    await chrome.storage.local.set({ items });
+    return { kept, removed, shopid: dominant };
+  }
+  const shopRunCount = async (runId) => Object.values((await chrome.storage.local.get('items')).items || {}).filter((x) => x.shopRun === runId).length;
+
+  async function captureShops() {
+    const lines = $('shopUrls').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    if (!lines.length) { setMsg('請先貼賣家的商店頁網址（例如 https://shopee.tw/shop/12345678）。', 'warn'); return; }
+    const pages = +$('shopPages').value || 3;
+    const minPct = +$('shopMinPct').value || 0;
+    const targets = [];
+    for (const l of lines) {
+      let u;
+      try { u = new URL(l); } catch (e) { setMsg('這個不是網址：' + l, 'err'); return; }
+      const path = u.pathname.replace(/\/$/, '') || '/';
+      if (!/shopee\.tw$/.test(u.hostname) && u.origin !== base()) { setMsg('只能貼蝦皮的網址：' + l, 'err'); return; }
+      if (path === '/') { setMsg('這是蝦皮首頁，請貼某個賣家的商店頁網址（例如 https://shopee.tw/shop/12345678）。', 'warn'); return; }
+      if (/^\/(product|flash_sale|search)/.test(path) || /-i\.\d+\.\d+/.test(path)) { setMsg('這看起來是商品頁／限時特賣／搜尋頁，不是賣家商店頁：' + l, 'warn'); return; }
+      targets.push({ u, path, line: l, shopid: (/^\/shop\/(\d+)/.exec(path) || [])[1] || '' });
+    }
+    S.stopCapture = false;
+    await chrome.storage.local.set({ stop: false });
+    setBusy(true);
+    capLog(null);
+    let win = null, total = 0, removedTotal = 0, stopped = false;
+    try {
+      for (let t = 0; t < targets.length && !S.stopCapture; t++) {
+        const { u, path, shopid } = targets[t];
+        const runId = `shop${Date.now()}-${t}`;
+        await chrome.storage.local.set({ arm: { path, runId, until: Date.now() + pages * 150000 + 60000 } });   // 讓內容腳本知道：這個賣家頁可以收
+        const label = `賣家 ${t + 1}（${path}）`;
+        for (let p = 0; p < pages && !S.stopCapture; p++) {
+          u.searchParams.set('page', p);
+          setMsg(`讀取${label}第 ${p + 1}/${pages} 頁…（可以按「停止」）`, 'info');
+          const before = await shopRunCount(runId);
+          let r;
+          if (!win) {
+            win = await openWindow(u.toString());
+            await ping(win.tabId);
+            const where = await onExpectedPage(win.tabId, [path, '/shop/']);
+            r = where.ok ? await chrome.tabs.sendMessage(win.tabId, { cmd: 'autoscroll', maxMs: 60000, quietMs: SC.config.searchQuietMs, expectPath: [path, '/shop/'] })
+              : { skipped: true, url: where.url, seen: 0 };
+          } else {
+            r = await gotoAndScroll(win.tabId, u.toString(), 60000, SC.config.searchQuietMs, [path, '/shop/']);
+          }
+          if (r.skipped || r.redirected) { capLog(`⚠ ${label}：蝦皮把網址轉到別的頁面（通常是首頁）了，已跳過。請確認網址是賣家商店頁。`); break; }
+          if (r.stopped) { stopped = true; break; }
+          const added = (await shopRunCount(runId)) - before;
+          capLog(`✓ ${label} 第 ${p + 1} 頁：讀到 ${r.seen} 個商品，新增 ${added} 個`);
+          if (added === 0) break;                 // 沒有新商品了，不用再往後翻頁
+        }
+        const res = await pruneShopRun(runId, minPct, shopid);
+        total += res.kept; removedTotal += res.removed;
+        capLog(`→ ${label}：留下 ${res.kept} 個折扣 ≥ ${minPct}% 的商品（排除 ${res.removed} 個沒打折或不是這個賣家的）`);
+      }
+      S.tab = 'other'; $('fPct').value = minPct; syncTabs();
+      setMsg(total ? `${S.stopCapture || stopped ? '⏹ 已停止。' : '✅ 完成：'}共抓到 ${total} 個賣場特價品（折扣 ≥ ${minPct}%）。下一步按「② 轉成分潤連結」。`
+        : '沒有抓到折扣商品。可能是：這個賣家目前沒有特價、折扣門檻太高、網址不是賣家商店頁，或需要登入／驗證。可以調低「折扣至少 %」再試，或按「下載診斷檔」傳給我。', total ? 'ok' : 'warn');
+    } catch (e) {
+      setMsg('❌ ' + e.message, 'err');
+    } finally {
+      await chrome.storage.local.remove('arm');
+      if (win) closeWin(win.winId);
+      setBusy(false);
+      load();
+    }
+  }
+
+  // ------------------------------------------------------------ 清除重複
+  async function dedupe() {
+    const { groups, remove } = SC.findDuplicates(tabRows(), $('dupMode').value);
+    if (!remove.length) { setMsg('沒有找到重複的商品。', 'ok'); return; }
+    if (!confirm(`找到 ${groups} 組重複，共 ${remove.length} 個多餘的商品。\n每一組只留 1 個（優先留已有分潤連結的、折扣最大的、價格最低的）。\n要清除嗎？（之後可以按「復原上次清除」）`)) return;
+    const g = await chrome.storage.local.get(['items', 'aff']);
+    const items = g.items || {}, aff = g.aff || {};
+    const removed = { items: {}, aff: {} };
+    for (const r of remove) {
+      if (items[r.key]) { removed.items[r.key] = items[r.key]; delete items[r.key]; }
+      if (aff[r.key]) { removed.aff[r.key] = aff[r.key]; delete aff[r.key]; }
+    }
+    await chrome.storage.local.set({ items, aff, lastRemoved: removed });
+    await load();
+    setMsg(`已清除 ${remove.length} 個重複的商品（${groups} 組，每組留 1 個）。`, 'ok');
+  }
+  async function undoDedupe() {
+    const g = await chrome.storage.local.get(['items', 'aff', 'lastRemoved']);
+    if (!g.lastRemoved) { setMsg('沒有可以復原的清除。', 'warn'); return; }
+    await chrome.storage.local.set({ items: { ...(g.items || {}), ...g.lastRemoved.items }, aff: { ...(g.aff || {}), ...g.lastRemoved.aff } });
+    await chrome.storage.local.remove('lastRemoved');
+    await load();
+    setMsg(`已復原 ${Object.keys(g.lastRemoved.items).length} 個商品。`, 'ok');
+  }
+
   // ------------------------------------------------------------ ② 轉分潤連結
   async function convertAffiliate() {
     const todo = currentRows().filter((r) => !(r.aff && r.aff.url)).map((r) => ({ key: r.key, url: r.url }));
@@ -333,10 +450,14 @@
   // ------------------------------------------------------------ 綁定
   $('btnFlash').addEventListener('click', () => captureFlash().catch((e) => { setMsg('❌ ' + e.message, 'err'); setBusy(false); }));
   $('btnSearch').addEventListener('click', captureSearch);
+  $('btnShop').addEventListener('click', captureShops);
+  $('btnDedupe').addEventListener('click', dedupe);
+  $('btnUndo').addEventListener('click', undoDedupe);
   $('btnAff').addEventListener('click', convertAffiliate);
   const requestStop = async () => { S.stopCapture = true; await chrome.storage.local.set({ stop: true }); setMsg('已要求停止（幾秒內會停）。', 'warn'); };
   $('btnStop').addEventListener('click', requestStop);
   $('btnStopFlash').addEventListener('click', requestStop);
+  $('btnStopShop').addEventListener('click', requestStop);
   $('btnLearn').addEventListener('click', async () => {
     await chrome.windows.create({ url: SC.config.affiliateBase + SC.config.customLinkPath, type: 'normal', width: 1100, height: 850, focused: true });
     setMsg('請在剛開的分潤後台視窗：貼一個蝦皮商品連結，按「取得連結」，看到短連結就好（不用關視窗）。回到這裡，「分潤後台做法」會變成「已學會 ✓」。', 'info');
@@ -357,7 +478,7 @@
     const b = ev.target.closest('[data-copy]');
     if (b) { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = '已複製'; setTimeout(() => (b.textContent = '複製'), 1200); }
   });
-  for (const id of ['flashUrls', 'moreSessions', 'kw', 'pages', 'sort', 'minPctSearch']) {
+  for (const id of ['shopUrls', 'shopPages', 'shopMinPct', 'flashUrls', 'moreSessions', 'kw', 'pages', 'sort', 'minPctSearch']) {
     try { const v = localStorage.getItem('sc_' + id); if (v != null) $(id).value = v; } catch (e) { /* ignore */ }
     $(id).addEventListener('change', () => { try { localStorage.setItem('sc_' + id, $(id).value); } catch (e) { /* ignore */ } });
   }

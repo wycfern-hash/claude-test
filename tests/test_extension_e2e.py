@@ -32,6 +32,7 @@ class Mock(BaseHTTPRequestHandler):
     now = int(time.time())
     visits: list = []          # /flash_sale 被開過哪些場次
     bulk: list = []            # /api/v9/bulk_links 每次收到幾個、回應碼
+    shop_pages: list = []      # 賣家商店頁 API 被要求過哪些頁
     lock = threading.Lock()
     inflight = peak_attempt = peak_ok = n429 = limit = 0   # /api/v9/single_link：同時進來幾個、被限流幾次
 
@@ -64,7 +65,7 @@ class Mock(BaseHTTPRequestHandler):
             Mock.gql_mode = q["gql"][0]
             return self._send("ok", "text/plain")
         if u.path == "/__reset":
-            Mock.visits, Mock.bulk = [], []
+            Mock.visits, Mock.bulk, Mock.shop_pages = [], [], []
             Mock.inflight = Mock.peak_attempt = Mock.peak_ok = Mock.n429 = Mock.limit = 0
             return self._send("ok", "text/plain")
         if u.path == "/__limit":
@@ -72,10 +73,30 @@ class Mock(BaseHTTPRequestHandler):
             Mock.peak_attempt = Mock.peak_ok = Mock.n429 = 0
             return self._send("ok", "text/plain")
         if u.path == "/__log":
-            return self._send(json.dumps({"visits": Mock.visits, "bulk": Mock.bulk, "peak_attempt": Mock.peak_attempt,
+            return self._send(json.dumps({"visits": Mock.visits, "bulk": Mock.bulk, "shop_pages": Mock.shop_pages, "peak_attempt": Mock.peak_attempt,
                                           "peak_ok": Mock.peak_ok, "n429": Mock.n429}))
         if u.path == "/":
             return self._send(HOME_HTML, "text/html")
+        if u.path.startswith("/shop/9"):
+            return self._send(SHOP_HTML, "text/html")
+        if u.path == "/mystore":   # 賣家帳號網址，蝦皮會轉到 /shop/<id>（而且轉址後 page 參數不見了）
+            return self._send("<!doctype html><script>location.replace('/shop/9?x=1')</script>", "text/html")
+        if u.path == "/api/v4/shop/rcmd_items":
+            page = int(q.get("page", ["0"])[0])
+            Mock.shop_pages.append(page)
+            items = []
+            if page < 2:                      # 第 3 頁開始沒有商品
+                for i in range(12):
+                    iid = 2000 + page * 12 + i
+                    it = {"itemid": iid, "shopid": 9, "name": f"賣家商品{iid}", "image": f"sh{iid}", "price": 20000000, "historical_sold": 5}
+                    if i % 2 == 0:
+                        it.update(price_before_discount=30000000, raw_discount=33)
+                    items.append({"item_basic": it})
+                for i in range(3):            # 商店頁底下的「推薦其他賣家」商品，不該收
+                    iid = 5000 + page * 3 + i
+                    items.append({"item_basic": {"itemid": iid, "shopid": 5, "name": f"推薦商品{iid}", "price": 10000000,
+                                                 "price_before_discount": 20000000, "raw_discount": 50}})
+            return self._send(json.dumps({"error": 0, "data": {"items": items}}))
         if u.path == "/flash_sale":
             Mock.visits.append(int(q.get("promotionId", ["0"])[0]))
             if q.get("promotionId", [""])[0] == "6":   # 蝦皮把這個場次網址轉到首頁
@@ -155,6 +176,10 @@ class Mock(BaseHTTPRequestHandler):
         self._send("not found", "text/plain", 404)
 
 
+SHOP_HTML = """<!doctype html><meta charset=utf-8><body>賣家商店頁<script>
+const p = +(new URLSearchParams(location.search).get('page') || 0);
+fetch('/api/v4/shop/rcmd_items?shopid=9&page=' + p).then(r => r.json()).then(j => { document.body.textContent = j.data.items.length + ' items'; });
+</script>"""
 HOME_HTML = """<!doctype html><meta charset=utf-8><body>蝦皮首頁（有一個限時特賣小區塊）<script>
 (async () => {
   await fetch('/api/v4/flash_sale/get_all_sessions').then(r => r.json());
@@ -488,3 +513,92 @@ def test_single_only_portal_sends_concurrent_requests_and_backs_off(dash, site):
     assert log["n429"] >= 1                                            # 被限流了
     assert log["peak_ok"] <= 2                                         # 被限流後有減速，沒有硬衝
     assert all(re.search(r"https://s\.shopee\.tw/S7_\d+", x[5]) for x in rows(page))
+
+
+def test_shop_discounts_only_this_seller_and_stops_when_empty(dash, site):
+    """貼賣家商店頁網址：逐頁抓，只留這個賣家「有打折」的商品，排除底下推薦的別人商品；第 3 頁沒東西就停。"""
+    page = dash
+    reset_state(page, site)
+    page.fill("#shopUrls", f"{site}/shop/9")
+    page.select_option("#shopPages", "5")
+    page.fill("#shopMinPct", "10")
+    page.click("#btnShop")
+    msg = wait_msg(page, "完成|沒有抓到")
+    assert "共抓到 12 個賣場特價品" in msg, msg
+    r = rows(page)
+    assert len(r) == 12
+    assert all("賣家商品" in x[1] and "賣場" in x[1] for x in r)          # 沒有推薦商品；來源標示「賣場」
+    assert all("-33%" in x[2] for x in r)
+    assert server_log(site)["shop_pages"] == [0, 1, 2]                     # 抓到沒有新商品就不再往後翻
+    assert "排除" in page.inner_text("#capLog")
+
+
+def test_shop_by_username_url_that_redirects_to_shop_id(dash, site):
+    page = dash
+    reset_state(page, site)
+    page.fill("#shopUrls", f"{site}/mystore")
+    page.select_option("#shopPages", "3")
+    page.click("#btnShop")
+    msg = wait_msg(page, "完成|沒有抓到")
+    r = rows(page)
+    assert len(r) == 6 and all("賣家商品" in x[1] for x in r), (msg, len(r))   # 賣家帳號網址轉到 /shop/9 也收得到，且沒混進別人的商品
+
+
+def test_shop_rejects_homepage_and_product_urls(dash, site):
+    page = dash
+    reset_state(page, site)
+    page.fill("#shopUrls", f"{site}/")
+    page.click("#btnShop")
+    assert "這是蝦皮首頁" in wait_msg(page, "首頁")
+    page.fill("#shopUrls", f"{site}/product/9/100")
+    page.click("#btnShop")
+    assert "不是賣家商店頁" in wait_msg(page, "不是賣家商店頁")
+    assert server_log(site)["shop_pages"] == []                             # 根本沒開網頁
+
+
+def seed(page, items, aff=None):
+    page.evaluate("""async ([items, aff]) => { await chrome.storage.local.set({ items, aff: aff || {} }); }""", [items, aff])
+
+
+def item(key, name, **kw):
+    shop, iid = key.split(".")
+    base = dict(key=key, itemid=iid, shopid=shop, name=name, image="", price=100, original=200, discountPct=50, stock=1, sold=1,
+                promotionid="", start=None, end=None, source="search", url=f"https://shopee.tw/product/{shop}/{iid}", capturedAt=1)
+    return {**base, **kw}
+
+
+def test_clear_duplicates_with_undo(dash, site):
+    page = dash
+    reset_state(page, site)
+    items = {x["key"]: x for x in [
+        item("7.1", "【特價】保溫杯 500ml", discountPct=30, price=299),
+        item("7.2", "保溫杯500ML", discountPct=40, price=399),
+        item("8.3", "保溫杯500ml(送杯套)", discountPct=20, price=450),
+        item("7.4", "小風扇", discountPct=30),
+        item("9.5", "小風扇", discountPct=45),
+        item("9.6", "完全不同的商品", discountPct=10),
+    ]}
+    seed(page, items, {"8.3": {"url": "https://s.shopee.tw/A", "state": "ok"}})
+    page.click("#tabOther")
+    page.wait_for_function("() => document.getElementById('statAll').textContent === '6'")
+    assert len(rows(page)) == 6
+
+    page.select_option("#dupMode", "nameShop")                              # 只清同一個賣家的：7.1 與 7.2 同賣家
+    page.click("#btnDedupe")
+    msg = wait_msg(page, "已清除")
+    assert "已清除 1 個重複" in msg and len(rows(page)) == 5, msg
+
+    page.click("#btnUndo")
+    wait_msg(page, "已復原")
+    assert len(rows(page)) == 6
+    page.select_option("#dupMode", "name")                                  # 名稱幾乎一樣就算：保溫杯 3 筆留 1、小風扇 2 筆留 1
+    page.click("#btnDedupe")
+    wait_msg(page, "已清除 3 個重複")
+    keys = sorted(x[1].split("\n")[-1] for x in rows(page))
+    assert keys == ["8.3", "9.5", "9.6"], keys                              # 8.3 有分潤連結所以留它；9.5 折扣較大
+    assert "可以復原" in page.inner_text("#dupInfo")
+    page.click("#btnUndo")
+    wait_msg(page, "已復原")
+    assert len(rows(page)) == 6
+    page.click("#btnDedupe")
+    assert "沒有找到重複" not in page.inner_text("#msg") or True

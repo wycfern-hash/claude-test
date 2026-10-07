@@ -12,7 +12,7 @@
   };
   // rows：dashboard 準備好的列（已合併場次與分潤連結）；S：status.js
   function toCsv(rows, nowMs, S) {
-    const SRC = { flash: '限時特賣', search: '搜尋特價', other: '其他' };
+    const SRC = { flash: '限時特賣', search: '搜尋特價', shop: '賣場特價', other: '其他' };
     const lines = [HEAD.map(esc).join(',')];
     for (const r of rows) {
       const st = S.sessionStatus(r.start, r.end, nowMs);

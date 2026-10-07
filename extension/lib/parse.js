@@ -113,5 +113,21 @@
     return 'other';
   }
 
-  return { num, money, pctOf, tsSec, walk, normalizeItem, extractItems, extractSessions, classify, IMG_BASE };
+  // 合併同一個商品的新舊資料。同一個商品出現在多個場次時，留「還沒結束、最早開始」的那個場次（都結束了就留最晚的）。
+  function mergeItem(old, neu, nowSec) {
+    if (!old) return neu;
+    const m = { ...old };
+    for (const [k, v] of Object.entries(neu)) if (v !== null && v !== '' && v !== undefined) m[k] = v;
+    if (old.source === 'flash' || neu.source === 'flash') m.source = 'flash';
+    if (old.shopRun && !neu.shopRun) m.shopRun = old.shopRun;
+    const cand = [old, neu].filter((x) => x.start && x.end);
+    if (cand.length === 2 && old.promotionid !== neu.promotionid) {
+      const live = cand.filter((x) => x.end > nowSec).sort((a, b) => a.start - b.start);
+      const pick = live[0] || cand.sort((a, b) => b.end - a.end)[0];
+      Object.assign(m, { promotionid: pick.promotionid, start: pick.start, end: pick.end });
+    }
+    return m;
+  }
+
+  return { num, money, pctOf, tsSec, walk, normalizeItem, extractItems, extractSessions, classify, mergeItem, IMG_BASE };
 });

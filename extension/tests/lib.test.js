@@ -4,6 +4,7 @@ const P = require('../lib/parse.js');
 const S = require('../lib/status.js');
 const C = require('../lib/csv.js');
 const A = require('../lib/affiliate.js');
+const D = require('../lib/dedupe.js');
 
 // ---------------------------------------------------------------- 解析
 test('限時特賣商品（舊格式）：金額 /100000、折扣、場次欄位', () => {
@@ -207,4 +208,47 @@ test('回應對應：數量對得上才算，順序不變、去重', () => {
   assert.equal(A.mapResponseToUrls('https://s.shopee.tw/A', urls), null);
   assert.deepEqual(A.extractShortLinks('https://s.shopee.tw/A https://s.shopee.tw/A https://shp.ee/B'), ['https://s.shopee.tw/A', 'https://shp.ee/B']);
   assert.deepEqual(A.CHUNK_STEPS, [20, 10, 5, 1]);
+});
+
+// ---------------------------------------------------------------- 清除重複
+const R = (key, name, o = {}) => ({ key, shopid: key.split('.')[0], name, discountPct: 0, price: 100, start: null, aff: null, ...o });
+
+test('名稱正規化：去標籤、空白、標點，轉小寫', () => {
+  assert.equal(D.normName('【限時特價】Apple AirPods Pro 2 (台灣公司貨)'), 'appleairpodspro2');
+  assert.equal(D.normName('保溫杯 500ML！'), D.normName('保溫杯500ml'));
+  assert.equal(D.normName('[熱銷] 小風扇 - 靜音'), '小風扇靜音');
+});
+
+test('重複：每組只留一個；有分潤連結的優先，其次折扣大、價格低', () => {
+  const rows = [
+    R('7.1', '【特價】保溫杯 500ml', { discountPct: 30, price: 299 }),
+    R('7.2', '保溫杯500ML', { discountPct: 40, price: 399 }),
+    R('8.3', '保溫杯500ml(送杯套)', { discountPct: 20, price: 450, aff: { url: 'https://s.shopee.tw/A' } }),
+    R('7.4', '小風扇', { discountPct: 30, price: 200 }),
+    R('9.5', '小風扇', { discountPct: 30, price: 150 }),
+    R('9.6', '完全不同的商品', { discountPct: 10 }),
+  ];
+  const { groups, remove } = D.findDuplicates(rows, 'name');
+  assert.equal(groups, 2);
+  assert.deepEqual(remove.map((r) => r.key).sort(), ['7.1', '7.2', '7.4']);   // 留 8.3（有分潤連結）與 9.5（折扣一樣但比較便宜）
+});
+
+test('重複：只比同一個賣家', () => {
+  const rows = [R('7.1', '保溫杯', { discountPct: 10 }), R('7.2', '保溫杯', { discountPct: 20 }), R('9.3', '保溫杯', { discountPct: 5 })];
+  const { remove } = D.findDuplicates(rows, 'nameShop');
+  assert.deepEqual(remove.map((r) => r.key), ['7.1']);                        // 7.1 與 7.2 同賣家，留折扣大的；9.3 是別的賣家，不動
+  assert.equal(D.findDuplicates(rows, 'name').remove.length, 2);
+  assert.equal(D.findDuplicates([R('1.1', '【特價】')], 'name').remove.length, 0);   // 名稱清掉標籤後是空的，不拿來比
+});
+
+// ---------------------------------------------------------------- 同一商品多個場次
+test('合併：同一個商品在多個場次，留還沒結束且最早開始的', () => {
+  const now = 1000;
+  const item = (promo, start, end, extra = {}) => ({ key: '7.1', name: 'A', promotionid: promo, start, end, source: 'flash', ...extra });
+  assert.equal(P.mergeItem(item('a', 100, 500), item('b', 900, 1500), now).promotionid, 'b');      // a 已結束
+  assert.equal(P.mergeItem(item('a', 2000, 3000), item('b', 1200, 1500), now).promotionid, 'b');   // 都還沒結束：留較早開始
+  assert.equal(P.mergeItem(item('a', 100, 500), item('b', 200, 600), now).promotionid, 'b');       // 都結束了：留最晚的
+  assert.equal(P.mergeItem(item('a', 900, 1500), item('a', 900, 1500, { price: 5 }), now).price, 5);
+  assert.equal(P.mergeItem({ key: 'k', source: 'flash' }, { key: 'k', source: 'search' }, now).source, 'flash');
+  assert.equal(P.mergeItem(undefined, { key: 'k' }, now).key, 'k');
 });

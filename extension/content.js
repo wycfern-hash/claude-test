@@ -16,14 +16,17 @@
   async function handle(d) {
     let json;
     try { json = JSON.parse(d.body); } catch (e) { return; }
-    // 只收「限時特賣頁」和「搜尋頁」本身的資料。蝦皮首頁等其他頁面也有限時特賣小區塊，那些不收（否則會重複又混進雜訊）。
+    // 只收「限時特賣頁」「搜尋頁」，以及小幫手自己開來抓的「賣家商店頁」。蝦皮首頁等其他頁面的小區塊一律不收。
     const path = location.pathname;
     const onFlash = path.startsWith('/flash_sale');
     const onSearch = path.startsWith('/search');
-    if (!onFlash && !onSearch) return;
+    const arm = (await chrome.storage.local.get('arm')).arm;
+    const onShop = !onFlash && !onSearch && !!arm && Date.now() < arm.until && path !== '/' &&
+      (path.startsWith(arm.path) || path.startsWith('/shop/'));
+    if (!onFlash && !onSearch && !onShop) return;
     if (onFlash && !/flash_sale/i.test(d.url)) return;
     if (onSearch && !/search/i.test(d.url)) return;
-    const source = onFlash ? 'flash' : 'search';
+    const source = onFlash ? 'flash' : onSearch ? 'search' : 'shop';
     const promo = new URL(location.href).searchParams.get('promotionId') || '';
     const now = Date.now();
     const items = SC.extractItems(json, {
@@ -31,17 +34,12 @@
       shopBase: (SC.config && SC.config.shopeeBase) || undefined,
     });
     const sessions = SC.extractSessions(json);
+    if (source === 'shop') for (const it of items) it.shopRun = arm.runId;
     const g = await chrome.storage.local.get(['items', 'sessions', 'diag']);
     const all = g.items || {};
     const sess = g.sessions || {};
     for (const it of items) {
-      const old = all[it.key];
-      if (old) {
-        const merged = { ...old };
-        for (const [k, v] of Object.entries(it)) if (v !== null && v !== '' && v !== undefined) merged[k] = v;
-        if (old.source === 'flash' || it.source === 'flash') merged.source = 'flash';
-        all[it.key] = merged;
-      } else all[it.key] = it;
+      all[it.key] = SC.mergeItem(all[it.key], it, Math.floor(Date.now() / 1000));
       if (!seen.has(it.key)) { seen.add(it.key); lastNewAt = Date.now(); }
     }
     for (const s of sessions) sess[s.promotionid] = { ...(sess[s.promotionid] || {}), ...s };
@@ -58,12 +56,12 @@
   async function autoscroll(opt) {
     const maxMs = opt.maxMs || 120000;
     const quietMs = opt.quietMs || 7000;
-    const expectPath = opt.expectPath || '';
+    const expectPaths = [].concat(opt.expectPath || []);
     const t0 = Date.now();
     lastNewAt = Date.now();
     let stopped = false;
     while (Date.now() - t0 < maxMs) {
-      if (expectPath && !location.pathname.startsWith(expectPath)) { return { ok: true, seen: seen.size, redirected: location.href }; }
+      if (expectPaths.length && (location.pathname === '/' || !expectPaths.some((p) => location.pathname.startsWith(p)))) { return { ok: true, seen: seen.size, redirected: location.href }; }
       if ((await chrome.storage.local.get('stop')).stop) { stopped = true; break; }
       window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.85)));
       await sleep(650);
