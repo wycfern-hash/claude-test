@@ -66,6 +66,15 @@ SPEC = [
     ("PHONE_PACKAGE", "com.shopee.tw", str),
     # 臉書／Threads 貼文
     ("POST_DISCLOSURE", "（以上為情境示意）※ 內含蝦皮分潤連結，經由連結購買我可能獲得佣金，不影響你的售價。", str),
+    # Threads / Facebook 粉絲專頁 自動發文與回留言（操控你的 Chrome，不用 API）
+    ("SOCIAL_AUTO", False, bool),          # 背景自動發佇列裡的貼文（要在「發文」頁按「開始自動發文」）
+    ("SOCIAL_DAILY_CAP", 3, int),          # 每天最多自動發幾則（所有平台合計）
+    ("SOCIAL_MIN_GAP_MIN", 90, int),       # 兩則之間至少隔幾分鐘（再加 0~20% 隨機）
+    ("SOCIAL_LINK_IN", "comment", str),    # comment=連結放自己貼文的第一則留言 | body=連結放貼文裡
+    ("SOCIAL_FB_PAGE_URL", "", str),       # 你的粉絲專頁網址
+    ("SOCIAL_REPLY_AUTO", False, bool),    # 自動回「有人問連結」的留言（其他留言一律等你確認）
+    ("SOCIAL_REPLY_DAILY_CAP", 15, int),   # 每天最多回幾則留言
+    ("SOCIAL_LEAD_DAILY_CAP", 10, int),    # 「找話題」每天最多回幾篇別人的貼文（每篇都要你按一下確認）
     # 雲端（S3 相容：AWS S3 / Cloudflare R2 / Backblaze B2 / MinIO）：影片上傳後產生下載連結，手機任何網路都能下載
     ("CLOUD_ENDPOINT", "", str),
     ("CLOUD_BUCKET", "", str),

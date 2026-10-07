@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 
-from . import cloud, config, db, imagegen, sourcing, uploader, videogen
+from . import cloud, config, db, imagegen, social, sourcing, uploader, videogen
 
 browser_lock = threading.Lock()  # 同一個自動化 Chrome 同時只能做一件事
 log: list[str] = []
@@ -49,6 +49,10 @@ def tick() -> None:
         steps.append(("上傳雲端", lambda: cloud.run(conn)))
         # 沒按「開始」時，上架只匯出上架包，不會去操作手機
         steps.append(("上架", lambda: _locked(lambda c: uploader.run(c, None if run else "manual"), conn)))
+        if config.SOCIAL_AUTO:  # 自己在「發文」頁打開才會跑；有每日上限與間隔
+            steps.append(("自動發文", lambda: _locked(social.run_queue, conn)))
+        if config.SOCIAL_REPLY_AUTO:
+            steps.append(("回覆問連結的留言", lambda: _locked(social.auto_replies, conn)))
         for name, fn in steps:
             _set(name)
             try:

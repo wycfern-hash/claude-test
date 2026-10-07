@@ -73,7 +73,7 @@ def open_context():
 
 
 def open_login_tabs() -> None:
-    """開自動化 Chrome 並打開 Google / Flow / 蝦皮分頁，讓你手動登入。"""
+    """開自動化 Chrome 並打開 Google / Flow / 蝦皮 / Threads / Facebook 分頁，讓你手動登入。"""
     with open_context() as ctx:
-        for url in ("https://gemini.google.com", "https://labs.google/fx/tools/flow", "https://shopee.tw"):
+        for url in ("https://gemini.google.com", "https://labs.google/fx/tools/flow", "https://shopee.tw", "https://www.threads.com", "https://www.facebook.com"):
             ctx.new_page().goto(url)

@@ -63,6 +63,50 @@ CREATE TABLE IF NOT EXISTS products (
   updated_at TEXT NOT NULL,
   uploaded_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS social_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,                 -- threads | facebook
+  text TEXT NOT NULL,
+  comment TEXT NOT NULL DEFAULT '',       -- 要在自己貼文下面補的第一則留言（連結放留言區時）
+  images TEXT NOT NULL DEFAULT '[]',      -- 相對 DATA_DIR 的圖片路徑
+  status TEXT NOT NULL DEFAULT 'queued',  -- queued | posted | failed | skipped
+  error TEXT NOT NULL DEFAULT '',
+  post_url TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  posted_at TEXT,
+  UNIQUE(product_id, platform)            -- 一個商品在一個平台只發一次
+);
+CREATE TABLE IF NOT EXISTS social_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  post_url TEXT NOT NULL,
+  product_id INTEGER NOT NULL DEFAULT 0,
+  ckey TEXT NOT NULL,                     -- 留言的指紋（作者+內容），同一則留言只回一次
+  author TEXT NOT NULL DEFAULT '',
+  comment TEXT NOT NULL,
+  draft TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'chat',      -- link = 對方在問連結 | chat = 一般互動
+  status TEXT NOT NULL DEFAULT 'draft',   -- draft | approved | sent | skipped | failed
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  UNIQUE(platform, post_url, ckey)
+);
+
+CREATE TABLE IF NOT EXISTS social_leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  keyword TEXT NOT NULL,
+  url TEXT NOT NULL UNIQUE,               -- 別人的貼文網址（同一篇只出現一次）
+  author TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL,
+  draft TEXT NOT NULL DEFAULT '',         -- 回覆草稿（你可以改）
+  status TEXT NOT NULL DEFAULT 'new',     -- new | sent | skipped | failed
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  sent_at TEXT
+);
 """
 
 # 內建主角：全是虛構的 AI 角色（不是真人）。description 為英文，直接進提示詞。
