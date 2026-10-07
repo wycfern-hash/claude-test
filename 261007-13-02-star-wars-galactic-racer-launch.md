@@ -9,14 +9,15 @@ description: 《Star Wars: Galactic Racer》10/6 上市：PS5、Xbox Series X|S�
 </style>
 <div class="jue-article">
 <div class="jue-hero"><div class="jue-kicker">歐美遊戲新聞・2026 年 10 月 6 日</div><div class="jue-hero-title">《Star Wars: Galactic Racer》2026/10 正式上市！星戰賽車這次是 Roguelite，路線與強化每一輪都不一樣</div><p>《Star Wars: Galactic Racer》10/6 登上 PS5、Xbox Series X|S 與 PC，單人戰役做成 Roguelite，還有線上多人競速。</p></div>
+<figure class="jue-image"><img src="IMAGE_URL_1" alt="Star Wars: Galactic Racer 官方主視覺" loading="lazy"><figcaption>《Star Wars: Galactic Racer》官方主視覺。圖片來源：Star Wars 官方／Steam 商店頁</figcaption></figure>
 <p>《Star Wars: Galactic Racer》在 2026 年 10 月 6 日上市，平台是 PS5、Xbox Series X|S 與 PC。這款星戰賽車遊戲由 Fuse Games 開發、Secret Mode 發行，最特別的地方是單人戰役不是一條直線的比賽表，而是帶有隨機強化、分支路線與逐步升高難度的 Roguelite 結構。</p><p>故事背景在銀河帝國垮台之後的外環地帶，玩家扮演的是自訂外觀的賽車手 Shade。除了大家熟悉的飛梭（Podracer），還有 Speederbike 與 Landspeeder 等載具可以操控，並有線上多人與其他遊玩模式。</p>
 <nav class="jue-toc"><div class="jue-toc-title">📌 快速目錄</div><ol><li><a href="#s1">《Star Wars: Galactic Racer》上市平台、版本與價格</a></li><li><a href="#s2">故事與主角：外環地帶的地下賽車聯賽</a></li><li><a href="#s3">Roguelite 戰役怎麼玩？</a></li><li><a href="#s4">載具與遊戲模式</a></li><li><a href="#s5">最後聊聊：想玩星戰賽車又不排斥重複挑戰的人</a></li></ol></nav>
 <h2 id="s1">《Star Wars: Galactic Racer》上市平台、版本與價格</h2>
 <div class="jue-table-wrap"><table class="jue-table"><tr><th>項目</th><th>內容</th></tr><tr><td>遊戲名稱</td><td>Star Wars: Galactic Racer</td></tr><tr><td>開發</td><td>Fuse Games</td></tr><tr><td>發行商</td><td>Secret Mode</td></tr><tr><td>類型</td><td>賽車（帶冒險元素），單人戰役採 Roguelite 結構</td></tr><tr><td>上市日期</td><td>2026 年 10 月 6 日</td></tr><tr><td>平台</td><td>PS5、Xbox Series X|S、PC（Steam）</td></tr><tr><td>參考定價</td><td>標準版 US$59.99（£49.99／€59.99）；Deluxe 版 US$79.99（£64.99／€79.99）</td></tr></table></div><p>價格為歐美定價，台灣售價請以各平台商店頁顯示為準。Steam 版也有 Deluxe 版可選。</p>
 <h2 id="s2">故事與主角：外環地帶的地下賽車聯賽</h2>
-<p>遊戲設定在銀河帝國垮台之後。外環地帶出現了一個不受官方認可的賽車聯賽，玩家扮演的 Shade 是一位可以自訂外觀、戴著頭盔的賽車手，目標是爬上聯賽頂端，同時帶著對榮耀與復仇的執念。</p><p>比賽場地橫跨新舊星戰星球，包括 Jakku、Ando Prime 等地點；戰役最後會在 Derven Acos 迎來最終對決。每個星球的賽道各有不同的混亂與障礙。</p>
+<p>遊戲設定在銀河帝國垮台之後。外環地帶出現了一個不受官方認可的賽車聯賽，玩家扮演的 Shade 是一位可以自訂外觀、戴著頭盔的賽車手，目標是爬上聯賽頂端，同時帶著對榮耀與復仇的執念。</p><p>比賽場地橫跨新舊星戰星球，包括 Jakku、Ando Prime 等地點；戰役最後會在 Derven Acos 迎來最終對決。每個星球的賽道各有不同的混亂與障礙。</p><figure class="jue-image"><img src="IMAGE_URL_2" alt="Star Wars: Galactic Racer 飛梭在賽道上競速的畫面" loading="lazy"><figcaption>《Star Wars: Galactic Racer》賽道畫面。圖片來源：Xbox Wire／Steam 商店頁</figcaption></figure>
 <h2 id="s3">Roguelite 戰役怎麼玩？</h2>
-<p>戰役不是一場接著一場、順序固定的賽事。每次挑戰會隨機給你強化與加成，路線上有分支，要選擇不同的挑戰，難度也會逐步升高。每輪都可以調整自己的配置、解鎖新能力，還能打出俐落的撞擊擊毀（takedown）。</p><p>速度方面有兩種拉開差距的方式，其中 Afterburner 是基本的加速，同時也決定加速與減速的快慢。賽道本身有分支路線與風險報酬的選擇，所以即使同一個賽道，每次跑起來的感覺也不會完全一樣。</p>
+<p>戰役不是一場接著一場、順序固定的賽事。每次挑戰會隨機給你強化與加成，路線上有分支，要選擇不同的挑戰，難度也會逐步升高。每輪都可以調整自己的配置、解鎖新能力，還能打出俐落的撞擊擊毀（takedown）。</p><p>速度方面有兩種拉開差距的方式，其中 Afterburner 是基本的加速，同時也決定加速與減速的快慢。賽道本身有分支路線與風險報酬的選擇，所以即使同一個賽道，每次跑起來的感覺也不會完全一樣。</p><figure class="jue-image"><img src="IMAGE_URL_3" alt="Star Wars: Galactic Racer 主角 Shade 與載具" loading="lazy"><figcaption>《Star Wars: Galactic Racer》主角 Shade 與載具。圖片來源：Star Wars 官方／Steam 商店頁</figcaption></figure>
 <h2 id="s4">載具與遊戲模式</h2>
 <p>載具方面有多種斥力載具（repulsorcraft）等級，各自有不同的操控特性與戰術優勢；賽車手可以操控的類型包括 Skim Speeder、Speederbike、Landspeeder 與飛梭。喜歡《Star Wars》飛梭競速的玩家，這代表有熟悉的載具可玩。</p><p>模式除了戰役，還有街機模式（以計時挑戰為主）、情境模式（扮演戰役中的不同角色跑一小串比賽），以及線上多人。多人可以玩快速賽，也能玩完整的「一輪到底」賽事，最後同樣在 Derven Acos 收尾；一場比賽最多可與另外 11 名玩家同場競速。</p><div class="jue-tip"><strong>新手建議：</strong>想先熟悉操控的話，可以從街機模式的計時挑戰開始，再進戰役處理隨機強化與路線選擇。</div>
 <h2 id="s5">最後聊聊：想玩星戰賽車又不排斥重複挑戰的人</h2>
