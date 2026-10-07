@@ -1,4 +1,4 @@
-"""Threads / Facebook 粉絲專頁 發文、回留言、找話題。
+"""Threads / Facebook 粉絲專頁 發文、Threads 搜尋後逐篇回覆。
 瀏覽器部分只對「假的 Threads/Facebook 頁面」驗證流程；真站的按鈕文字是猜的，要靠 data/debug 診斷檔校正。"""
 import http.server
 import json
@@ -110,105 +110,56 @@ def product(conn, url="https://shopee.tw/a-i.1.1", aff="https://s.shopee.tw/AbC"
     return pid
 
 
-# ------------------------------------------------------------ 不需要瀏覽器的規則
-def test_queue_requires_posts_and_affiliate_link_and_is_unique():
+# ------------------------------------------------------------ 規則（不需要瀏覽器）
+def test_publish_refuses_without_posts_without_affiliate_link_or_when_already_posted():
     with db.connect() as conn:
         no_posts = product(conn, with_posts=False)
-        with pytest.raises(RuntimeError, match="還沒有產生貼文"):
-            social.queue(conn, no_posts, "threads")
+        with pytest.raises(RuntimeError, match="還沒有貼文"):
+            social.publish(conn, no_posts, "threads", ctx=object())
         plain = product(conn, "https://shopee.tw/b-i.2.2", aff="", title="一般連結")
         with pytest.raises(RuntimeError, match="沒有分潤連結"):
-            social.queue(conn, plain, "threads")
+            social.publish(conn, plain, "threads", ctx=object())
         ok = product(conn, "https://shopee.tw/c-i.3.3", title="風扇")
-        assert social.queue(conn, ok, "threads") and social.queue(conn, ok, "facebook")
-        assert social.queue(conn, ok, "threads") is None          # 同商品同平台只發一次
         with pytest.raises(ValueError):
-            social.queue(conn, ok, "instagram")
+            social.publish(conn, ok, "instagram", ctx=object())
+        conn.execute("INSERT INTO social_posts (product_id,platform,created_at) VALUES (?,?,?)", (ok, "threads", "now"))
+        with pytest.raises(RuntimeError, match="已經發過"):
+            social.publish(conn, ok, "threads", ctx=object())
 
 
-def test_link_placement_comment_vs_body():
-    with db.connect() as conn:
-        pid = product(conn)
-        social.queue(conn, pid, "threads")
-        r = social.rows(conn)[0]
-    assert "https://s.shopee.tw/AbC" not in r["text"] and "https://s.shopee.tw/AbC" in r["comment"]   # 預設：連結放留言
-    assert config.POST_DISCLOSURE in r["text"]
-    config.save_env({"SOCIAL_LINK_IN": "body"})
-    with db.connect() as conn:
-        pid = product(conn, "https://shopee.tw/d-i.4.4", "https://s.shopee.tw/Zzz", "風扇")
-        social.queue(conn, pid, "threads")
-        r = [x for x in social.rows(conn) if x["product_id"] == pid][0]
-    assert "https://s.shopee.tw/Zzz" in r["text"] and r["comment"] == ""
-
-
-def test_daily_cap_and_min_gap_block_auto_posting(monkeypatch):
-    called = []
-    monkeypatch.setattr(social, "post_one", lambda *a, **k: called.append(1) or "")
-    with db.connect() as conn:
-        for i, n in enumerate(("a", "b", "c")):
-            pid = product(conn, f"https://shopee.tw/{n}-i.{i + 1}.{i + 1}", f"https://s.shopee.tw/{n}", n)
-            social.queue(conn, pid, "threads")
-        assert social.run_queue(conn, ctx=object()) == 1                     # 一次最多一則
-        assert social.run_queue(conn, ctx=object()) == 0                     # 間隔（預設 90 分鐘）還沒到
-        config.save_env({"SOCIAL_MIN_GAP_MIN": "0", "SOCIAL_DAILY_CAP": "1"})
-        assert social.run_queue(conn, ctx=object()) == 0                     # 間隔 OK 但今天已達上限
-        config.save_env({"SOCIAL_DAILY_CAP": "5"})
-        assert social.run_queue(conn, ctx=object()) == 1                     # 上限放寬就繼續
-        assert social.posted_today(conn) == 2 and len(called) == 2
-        config.save_env({"SOCIAL_MIN_GAP_MIN": "90"})
-        conn.execute("UPDATE social_posts SET posted_at='2000-01-01T00:00:00+00:00' WHERE status='posted'")
-        assert social.run_queue(conn, ctx=object()) == 1                     # 上次發文很久以前 → 間隔早就過了
-
-
-def test_draft_for_link_questions_uses_affiliate_link_only():
-    with db.connect() as conn:
-        pid = product(conn)
-        row = db.get(conn, pid)
-    kind, text = social.draft_for("請問連結在哪裡？", row)
-    assert kind == "link" and "https://s.shopee.tw/AbC" in text
-    kind, text = social.draft_for("看起來不錯耶", row)
-    assert kind == "chat" and "http" not in text
-
-
-def test_lead_reply_rules_no_links_no_empty_and_daily_cap():
+def test_lead_reply_rules_no_links_no_empty_and_daily_cap(monkeypatch):
     with db.connect() as conn:
         conn.execute("INSERT INTO social_leads (keyword,url,author,text,created_at) VALUES ('k','http://x/post/1','a','t','now')")
         with pytest.raises(RuntimeError, match="不能放連結"):
             social.send_lead(conn, 1, "看這個 https://s.shopee.tw/AbC", ctx=object())
         with pytest.raises(RuntimeError, match="空的"):
             social.send_lead(conn, 1, "  ", ctx=object())
-        config.save_env({"SOCIAL_LEAD_DAILY_CAP": "0"})
-        with pytest.raises(RuntimeError, match="每日上限"):
+        monkeypatch.setattr(social, "REPLY_DAILY_CAP", 0)
+        with pytest.raises(RuntimeError, match="明天再繼續"):
             social.send_lead(conn, 1, "好看", ctx=object())
 
 
-def test_social_page_and_queue_actions():
+def test_settings_page_no_longer_has_social_clutter_and_page_is_simple():
     from shopee_clips import web
 
+    c = TestClient(web.app)
+    st = c.get("/settings").text
+    assert "SOCIAL_" not in st
     with db.connect() as conn:
         product(conn)
         product(conn, "https://shopee.tw/b-i.2.2", aff="", title="沒連結")
-    c = TestClient(web.app)
     page = c.get("/social").text
-    assert "發文佇列" in page and "排進 Threads" in page and "沒有分潤連結" in page and "找話題" in page
-    assert c.post("/social/queue", data={"pid": 1, "platform": "threads"}, follow_redirects=False).status_code == 303
-    assert "已排" in c.get("/social").text
-    c.post("/social/queue", data={"pid": 2, "platform": "threads"}, follow_redirects=False)
-    with db.connect() as conn:
-        assert len(social.rows(conn)) == 1
-    c.post("/social/post/1", data={"skip": "1"}, follow_redirects=False)
-    with db.connect() as conn:
-        assert social.rows(conn)[0]["status"] == "skipped"
-    assert c.post("/social/auto", data={"on": "1"}, follow_redirects=False).status_code == 303 and config.SOCIAL_AUTO
-    c.post("/social/auto", data={"on": "0"}, follow_redirects=False)
-    assert not config.SOCIAL_AUTO and "SOCIAL_FB_PAGE_URL" in c.get("/settings").text
+    assert "發到 Threads" in page and "發到 Facebook" in page and "還沒有分潤連結" in page and "搜尋" in page
+    assert "佇列" not in page and "自動發文" not in page
+    assert c.post("/social/fb-url", data={"url": "https://facebook.com/mypage"}, follow_redirects=False).status_code == 303
+    assert config.SOCIAL_FB_PAGE_URL == "https://facebook.com/mypage"
+    assert "facebook.com/mypage" in c.get("/social").text
 
 
 # ------------------------------------------------------------ 假的 Threads / Facebook 頁面
 def labels(base):
     t = json.loads(Path("config/social_sites.json").read_text(encoding="utf-8"))
-    t["threads"] |= {"url": base + "/threads", "search_url": base + "/search?q={q}", "step_timeout_sec": 8,
-                     "search_link_selector": "a[href*='/post/']"}
+    t["threads"] |= {"url": base + "/threads", "search_url": base + "/search?q={q}", "step_timeout_sec": 8}
     t["facebook"] |= {"step_timeout_sec": 8}
     return t
 
@@ -232,7 +183,7 @@ def chrome(monkeypatch, mock_site):
 
 
 @pytest.mark.skipif(CHROME is None, reason="no chromium")
-def test_threads_preview_then_publish_with_thread_comment_and_image(chrome, mock_site):
+def test_threads_preview_does_not_publish_then_publish_with_link_in_second_part_and_image(chrome, mock_site):
     from PIL import Image
 
     ctx, base = chrome
@@ -243,77 +194,49 @@ def test_threads_preview_then_publish_with_thread_comment_and_image(chrome, mock
         img.parent.mkdir(parents=True)
         Image.new("RGB", (50, 50), "red").save(img)
         conn.execute("UPDATE products SET selected_images=? WHERE id=?", (json.dumps(["images/1/0.png"]), pid))
-        social.queue(conn, pid, "threads")
-        sid = social.rows(conn)[0]["id"]
-        social.run_queue(conn, only_id=sid, preview=True, ctx=ctx)       # 預覽：不發佈
-        assert getlog()["posts"] == [] and social.rows(conn)[0]["status"] == "queued"
-        assert "尚未發佈" in social.rows(conn)[0]["error"]
+        msg = social.publish(conn, pid, "threads", preview=True, ctx=ctx)
+        assert "自己按" in msg and getlog()["posts"] == [] and not social.is_posted(conn, pid, "threads")
         for pg in list(ctx.pages):
             if pg.url.startswith(base):
                 pg.close()
-        assert social.run_queue(conn, only_id=sid, ctx=ctx) == 1
-        r = social.rows(conn)[0]
+        assert "已發到 Threads" in social.publish(conn, pid, "threads", ctx=ctx)
+        assert social.is_posted(conn, pid, "threads")
+        with pytest.raises(RuntimeError, match="已經發過"):
+            social.publish(conn, pid, "threads", ctx=ctx)
     log = getlog()["posts"]
-    assert len(log) == 1 and log[0]["platform"] == "threads" and log[0]["files"] == 1
-    assert len(log[0]["texts"]) == 2                                      # 串文：貼文 + 第一則留言（連結）
-    assert "https://s.shopee.tw/AbC" in log[0]["texts"][1] and "https://s.shopee.tw/AbC" not in log[0]["texts"][0]
-    assert "\n" in log[0]["texts"][0]                                      # 換行有保留
-    assert r["status"] == "posted" and r["post_url"].endswith("/post/1")
+    assert len(log) == 1 and log[0]["files"] == 1 and len(log[0]["texts"]) == 2
+    assert "https://s.shopee.tw/AbC" not in log[0]["texts"][0] and "https://s.shopee.tw/AbC" in log[0]["texts"][1]   # 上面只有文，連結在第二則
+    assert "\n" in log[0]["texts"][0]
 
 
 @pytest.mark.skipif(CHROME is None, reason="no chromium")
-def test_facebook_page_post_and_first_comment(chrome, mock_site):
+def test_facebook_page_text_on_top_link_in_comment(chrome, mock_site):
     ctx, base = chrome
     _, getlog = mock_site
     with db.connect() as conn:
         pid = product(conn)
-        social.queue(conn, pid, "facebook")
-        assert social.run_queue(conn, only_id=social.rows(conn)[0]["id"], ctx=ctx) == 1, social.rows(conn)[0]["error"]
+        assert "已發到 Facebook" in social.publish(conn, pid, "facebook", ctx=ctx)
     log = getlog()["posts"]
-    assert log[0]["platform"] == "facebook" and log[0]["texts"][0].strip()
-    assert any("https://s.shopee.tw/AbC" in (x.get("comment") or "") for x in log)   # 第一則留言有連結
+    assert log[0]["platform"] == "facebook" and "https://s.shopee.tw/AbC" not in log[0]["texts"][0]      # 貼文本身沒有連結
+    assert any("https://s.shopee.tw/AbC" in (x.get("comment") or "") for x in log)                        # 連結在留言
 
 
 @pytest.mark.skipif(CHROME is None, reason="no chromium")
-def test_failed_post_is_recorded_with_diagnostics(chrome, monkeypatch):
+def test_failed_publish_raises_with_diagnostics_and_is_not_marked_posted(chrome, monkeypatch):
     ctx, base = chrome
     L = labels(base)
     L["threads"]["composer_open"] = "不存在的按鈕文字"
     monkeypatch.setattr(social, "site", lambda n: L[n])
     with db.connect() as conn:
         pid = product(conn)
-        social.queue(conn, pid, "threads")
-        assert social.run_queue(conn, only_id=1, ctx=ctx) == 0
-        r = social.rows(conn)[0]
-    assert r["status"] == "failed" and "threads_開啟發文框" in r["error"]
+        with pytest.raises(RuntimeError, match="threads_開啟發文框"):
+            social.publish(conn, pid, "threads", ctx=ctx)
+        assert not social.is_posted(conn, pid, "threads")
     assert list((config.DATA_DIR / "debug").glob("*.png"))
 
 
 @pytest.mark.skipif(CHROME is None, reason="no chromium")
-def test_scan_comments_drafts_once_and_sends_only_approved_and_auto_link(chrome, mock_site):
-    ctx, base = chrome
-    _, getlog = mock_site
-    url = base + "/post/1"
-    with db.connect() as conn:
-        pid = product(conn)
-        assert social.collect(conn, "threads", url, pid, ctx=ctx) == 2
-        assert social.collect(conn, "threads", url, pid, ctx=ctx) == 0      # 同一則留言不會重複產生
-        ds = social.replies(conn)
-        by = {d["author"]: d for d in ds}
-        assert by["amy"]["kind"] == "link" and "https://s.shopee.tw/AbC" in by["amy"]["draft"]
-        assert by["bob"]["kind"] == "chat"
-        assert social.send_replies(conn, ctx=ctx, pause=False) == 0         # 還沒核准，不會送
-        assert social.send_replies(conn, auto_only=True, ctx=ctx, pause=False) == 1   # 只自動回「問連結」那則
-        assert getlog()["replies"][0]["to"].startswith("請問連結") and "https://s.shopee.tw/AbC" in getlog()["replies"][0]["text"]
-        conn.execute("UPDATE social_replies SET status='approved', draft='謝謝你～' WHERE author='bob'")
-        assert social.send_replies(conn, ctx=ctx, pause=False) == 1
-        assert getlog()["replies"][1]["text"] == "謝謝你～"
-        config.save_env({"SOCIAL_REPLY_DAILY_CAP": "2"})
-        assert social.send_replies(conn, auto_only=True, ctx=ctx, pause=False) == 0   # 達每日上限
-
-
-@pytest.mark.skipif(CHROME is None, reason="no chromium")
-def test_find_topics_then_reply_one_by_one_without_links(chrome, mock_site):
+def test_search_then_reply_one_by_one_without_links(chrome, mock_site):
     ctx, base = chrome
     _, getlog = mock_site
     with db.connect() as conn:
@@ -322,10 +245,9 @@ def test_find_topics_then_reply_one_by_one_without_links(chrome, mock_site):
         ls = social.leads(conn)
         assert {x["author"] for x in ls} == {"zoe", "max"} and all(x["draft"] == "" for x in ls)   # 沒選 AI → 不預寫
         z = [x for x in ls if x["author"] == "zoe"][0]
-        # 找話題的網址是 /post/11：假站用同一個回覆頁
         social.send_lead(conn, z["id"], "我也在找，推薦先看容量跟保溫時間～", ctx=ctx)
-        assert social.leads(conn, "sent")[0]["author"] == "zoe"
-    assert getlog()["replies"][-1]["text"].startswith("我也在找")
+        assert [x["author"] for x in social.leads(conn)] == ["max"]          # 回過的不再出現
+    assert getlog()["replies"][-1]["text"].startswith("我也在找") and len(getlog()["replies"]) == 1
 
 
 @pytest.mark.skipif(CHROME is None, reason="no chromium")

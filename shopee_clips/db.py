@@ -68,33 +68,13 @@ CREATE TABLE IF NOT EXISTS social_posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL,
   platform TEXT NOT NULL,                 -- threads | facebook
-  text TEXT NOT NULL,
-  comment TEXT NOT NULL DEFAULT '',       -- 要在自己貼文下面補的第一則留言（連結放留言區時）
-  images TEXT NOT NULL DEFAULT '[]',      -- 相對 DATA_DIR 的圖片路徑
-  status TEXT NOT NULL DEFAULT 'queued',  -- queued | posted | failed | skipped
-  error TEXT NOT NULL DEFAULT '',
-  post_url TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL DEFAULT '',
+  comment TEXT NOT NULL DEFAULT '',       -- 第一則留言（放分潤連結）
+  status TEXT NOT NULL DEFAULT 'posted',
   created_at TEXT NOT NULL,
   posted_at TEXT,
   UNIQUE(product_id, platform)            -- 一個商品在一個平台只發一次
 );
-CREATE TABLE IF NOT EXISTS social_replies (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  platform TEXT NOT NULL,
-  post_url TEXT NOT NULL,
-  product_id INTEGER NOT NULL DEFAULT 0,
-  ckey TEXT NOT NULL,                     -- 留言的指紋（作者+內容），同一則留言只回一次
-  author TEXT NOT NULL DEFAULT '',
-  comment TEXT NOT NULL,
-  draft TEXT NOT NULL DEFAULT '',
-  kind TEXT NOT NULL DEFAULT 'chat',      -- link = 對方在問連結 | chat = 一般互動
-  status TEXT NOT NULL DEFAULT 'draft',   -- draft | approved | sent | skipped | failed
-  error TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  sent_at TEXT,
-  UNIQUE(platform, post_url, ckey)
-);
-
 CREATE TABLE IF NOT EXISTS social_leads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   keyword TEXT NOT NULL,

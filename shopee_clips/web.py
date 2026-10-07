@@ -1,5 +1,6 @@
 """審核 + 控制介面（手機/電腦瀏覽器都能開）。"""
 import html
+from urllib.parse import quote
 import json
 import threading
 import time
@@ -578,7 +579,6 @@ OTHER_OPTIONS = {
     "AI_LABEL": [("1", "開（影片左上角顯示「AI 生成」）"), ("0", "關")],
     "VIDEO_MODE": [("slideshow", "A. 圖片合成 15 秒（免費、不用 API）"), ("ai", "B. AI 生成影片（用新圖+腳本，花錢/點數）")],
     "ALLOW_PLAIN_LINK": [("0", "不允許（預設）：沒有分潤連結的商品不會自動上架"), ("1", "允許用一般連結（發了不會有分潤）")],
-    "SOCIAL_LINK_IN": [("comment", "放在自己貼文的第一則留言（建議）"), ("body", "放在貼文裡")],
     "UPLOAD_MODE": [("manual", "只匯出上架包（我在手機自己傳）"), ("phone_dryrun", "Android 手機自動操作，但不按發佈（先測這個）"),
                     ("phone_auto", "Android 手機自動操作並發佈")],
     "TTS": [("1", "開（曉臻）"), ("0", "關")],
@@ -593,8 +593,6 @@ LABELS = {
     "CLOUD_ENDPOINT": "Endpoint（R2/B2/MinIO 才填；AWS S3 留空）", "CLOUD_BUCKET": "Bucket 名稱", "CLOUD_ACCESS_KEY": "Access key",
     "CLOUD_SECRET_KEY": "Secret key", "CLOUD_PUBLIC_BASE": "公開網址前綴（bucket 已公開才填；留空=7 天預簽名連結）",
     "AFFILIATE_PICKS_URL": "分潤後台選品頁網址（選填）",
-    "SOCIAL_FB_PAGE_URL": "你的 Facebook 粉絲專頁網址", "SOCIAL_LINK_IN": "分潤連結放哪裡", "SOCIAL_DAILY_CAP": "每天最多自動發幾則（Threads+FB 合計）",
-    "SOCIAL_MIN_GAP_MIN": "兩則之間至少隔幾分鐘", "SOCIAL_REPLY_DAILY_CAP": "每天最多回幾則自己貼文底下的留言", "SOCIAL_LEAD_DAILY_CAP": "「找話題」每天最多回幾篇別人的貼文",
     "POST_DISCLOSURE": "貼文最後面的分潤／情境揭露文字（建議保留；清空就不加）",
     "APP_PASSWORD": "網頁密碼（選填；手機/區網使用建議設）", "FLOW_CLIPS_PER_PRODUCT": "Flow 每商品幾段",
 }
@@ -668,7 +666,6 @@ def settings(saved: int = 0):
             + cards + _card("預設值", ["DEFAULT_IMAGE_SOURCE", "VIDEO_MODE"]) + _card("配音、字幕與標示", ["TTS", "TTS_VOICE", "SUBTITLES", "AI_LABEL"])
             + _card("流程與上架（蝦皮短影音只有手機版）", ["DAILY_GEN_CAP", "DAILY_UPLOAD_CAP", "UPLOAD_MODE", "AFFILIATE_PICKS_URL", "APP_PASSWORD"])
             + _card("臉書／Threads 貼文", ["POST_DISCLOSURE"])
-            + _card("Threads / Facebook 粉絲專頁 自動發文（操控你的 Chrome）", ["SOCIAL_FB_PAGE_URL", "SOCIAL_LINK_IN", "SOCIAL_DAILY_CAP", "SOCIAL_MIN_GAP_MIN", "SOCIAL_REPLY_DAILY_CAP", "SOCIAL_LEAD_DAILY_CAP"])
             + _card("Android 手機自動上架（用 USB 偵錯操作蝦皮 App）", ["PHONE_SERIAL", "PHONE_PACKAGE"])
             + _card("雲端上傳（選填，S3 相容）", ["CLOUD_ENDPOINT", "CLOUD_BUCKET", "CLOUD_ACCESS_KEY", "CLOUD_SECRET_KEY", "CLOUD_PUBLIC_BASE"])
             + '<details class=card><summary><b>進階</b></summary>'
@@ -1066,197 +1063,85 @@ def posts_csv():
                     headers={"Content-Disposition": "attachment; filename=shopee_posts.csv"})
 
 
-# ------------------------------------------------------------------ Threads / Facebook 粉絲專頁 發文與回留言（操控你的 Chrome）
-def _bg_social(name, fn):
-    """背景做（會用到自動化 Chrome），完成/失敗用醒目訊息告訴你。"""
-    _bg(name, fn, "{}")
-
-
+# ------------------------------------------------------------------ 發文：Threads / Facebook 粉絲專頁（操控你的 Chrome）
 @app.get("/social")
-def social_page():
+def social_page(kw: str = ""):
     with db.connect() as conn:
         prods = [r for r in db.all_products(conn) if posts.load(r) and r["status"] != "skipped"]
-        queued_ids = {(x["product_id"], x["platform"]) for x in social.rows(conn)}
-        qrows = social.rows(conn)
-        drafts = social.replies(conn, "draft") + social.replies(conn, "approved") + social.replies(conn, "failed")
-        leads = [x for x in social.leads(conn) if x["status"] in ("new", "failed")]
-        today, replied, lead_today = social.posted_today(conn), social.replied_today(conn), social.lead_replied_today(conn)
-        na = social.next_allowed(conn)
-    on = config.SOCIAL_AUTO
-    top = f"""<div class=card><b>發文設定與狀態</b>
-<p>自動發文：<b>{'🟢 開啟' if on else '⚪ 關閉'}</b>（每天最多 {config.SOCIAL_DAILY_CAP} 則，間隔至少 {config.SOCIAL_MIN_GAP_MIN} 分鐘；今天已發 {today} 則）
-{('<br><small>下一則最早時間（UTC）：' + e(na.strftime("%m/%d %H:%M")) + '</small>') if na else ''}</p>
-<form method=post action=/social/auto style="display:inline"><input type=hidden name=on value="{0 if on else 1}"><button class="{'g' if on else 'ok'}">{'停止自動發文' if on else '開始自動發文'}</button></form>
-<form method=post action=/social/login style="display:inline"><button class=g>開啟 Chrome 登入 Threads／Facebook（只開這兩個）</button></form>
-<a class="btn g" href="/settings">調整上限／粉絲專頁網址</a>
-<p><small>第一次請先用佇列裡的「預覽（不發佈）」確認畫面對了，再按「發佈」。我沒看過你的實際畫面，按鈕文字可能要依診斷檔微調（config/social_sites.json）。
-每個商品在每個平台只發一次；沒有分潤連結的商品不會被排進來。</small></p></div>"""
-    # 排佇列
-    pr = ""
+        done = {(x["product_id"], x["platform"]) for x in conn.execute("SELECT product_id, platform FROM social_posts WHERE status='posted'")}
+        ls = social.leads(conn, kw)
+        today = social.replied_today(conn)
+    fb = config.SOCIAL_FB_PAGE_URL
+    rows_html = ""
     for r in prods:
         has_link = bool(posts.link_of(r))
-        btns = ""
-        for plat, zh in (("threads", "Threads"), ("facebook", "FB")):
-            if (r["id"], plat) in queued_ids:
-                btns += f'<span class=ok-tag>✔ {zh} 已排</span> '
+        cell = ""
+        for plat, zh in (("threads", "Threads"), ("facebook", "Facebook")):
+            if (r["id"], plat) in done:
+                cell += f'<span class=ok-tag>✔ 已發 {zh}</span> '
             elif has_link:
-                btns += f'<form method=post action=/social/queue style="display:inline"><input type=hidden name=pid value={r["id"]}><input type=hidden name=platform value={plat}><button class=g>排進 {zh}</button></form> '
-        pr += f'<div class=todo><div>#{r["id"]} {e(r["title"][:30])}{"" if has_link else " <span class=err>（沒有分潤連結）</span>"}</div><div>{btns}</div></div>'
-    queue_card = (f'<div class=card><b>① 排進發文佇列</b> <small>（用的是「貼文」頁產生的第 1 則情境貼文）</small>'
-                  f'<form method=post action=/social/queue-all><button class=g>全部有分潤連結的商品，都排進 Threads 和 FB</button></form>'
-                  f'{pr or "<p>還沒有商品有貼文：先到「貼文」頁產生</p>"}</div>')
-    # 佇列
-    qt = ""
-    for x in qrows:
-        st = {"queued": "待發", "posted": "已發", "failed": "失敗", "skipped": "略過"}[x["status"]]
-        btn = ""
-        if x["status"] in ("queued", "failed"):
-            btn = (f'<form method=post action=/social/post/{x["id"]} style="display:inline"><button name=preview value=1 class=g>預覽（不發佈）</button> '
-                   f'<button>發佈</button> <button name=skip value=1 class=g>略過</button></form>')
-        err = f'<div class=err>{e(x["error"])}</div>' if x["error"] else ""
-        qt += (f'<tr><td>{x["id"]}</td><td>{e(social.PLATFORMS[x["platform"]])}</td><td>{e(x["title"][:20])}'
-               f'<details><summary>看內容</summary><pre>{e(x["text"])}{chr(10) + "── 第一則留言 ──" + chr(10) + e(x["comment"]) if x["comment"] else ""}</pre></details>{err}</td>'
-               f'<td>{st}{(" <a href=" + e(x["post_url"]) + " target=_blank>連結</a>") if x["post_url"] else ""}</td><td>{btn}</td></tr>')
-    q_card = f'<div class=card><b>② 發文佇列</b><table><tr><th>#</th><th>平台</th><th>商品</th><th>狀態</th><th></th></tr>{qt or "<tr><td colspan=5>空的</td></tr>"}</table></div>'
-    # 回自己貼文的留言
-    pick = "".join(f'<option value={r["id"]}>#{r["id"]} {e(r["title"][:20])}</option>' for r in prods)
-    dr = ""
-    for x in drafts:
-        stz = {"draft": "草稿", "approved": "已核准", "failed": "失敗"}[x["status"]]
-        dr += (f'<form method=post action=/social/reply/{x["id"]} class=card style="margin:6px 0"><small>{e(social.PLATFORMS[x["platform"]])}｜{e(x["author"])}｜'
-               f'{"🔗問連結" if x["kind"] == "link" else "一般留言"}｜{stz}</small><div>「{e(x["comment"][:120])}」</div>'
-               f'<textarea name=draft rows=2>{e(x["draft"])}</textarea>'
-               f'{"<div class=err>" + e(x["error"]) + "</div>" if x["error"] else ""}'
-               f'<button name=act value=approve class=ok>核准</button> <button name=act value=skip class=g>略過</button></form>')
-    auto_r = config.SOCIAL_REPLY_AUTO
-    r_card = f"""<div class=card><b>③ 回覆我自己貼文底下的留言</b>
-<p><small>只讀你自己貼文的留言。有人問連結的，可以自動回你的分潤連結；其他留言產生草稿，你核准後才送出。今天已回 {replied} 則（上限 {config.SOCIAL_REPLY_DAILY_CAP}）。</small></p>
-<form method=post action=/social/scan class=row>
-<label>平台<select name=platform><option value=threads>Threads</option><option value=facebook>Facebook</option></select></label>
-<label style="flex:3">我的貼文網址<input type=text name=url placeholder="貼上你那則貼文的網址"></label>
-<label>對應商品（有人問連結時回這個）<select name=pid><option value=0>不指定</option>{pick}</select></label>
-<button>掃描留言</button></form>
-{dr or '<p><small>目前沒有待處理的留言草稿</small></p>'}
-<form method=post action=/social/reply-send style="display:inline"><button>送出所有已核准的回覆</button></form>
-<form method=post action=/social/reply-auto style="display:inline"><input type=hidden name=on value="{0 if auto_r else 1}"><button class=g>{'關閉' if auto_r else '開啟'}「自動回問連結的留言」（目前{'開' if auto_r else '關'}）</button></form></div>"""
-    # 找話題
+                cell += f'<button name=go value="{r["id"]}:{plat}">發到 {zh}</button> '
+        rows_html += f'<div class=todo><div>{e(r["title"][:34])}{"" if has_link else " <span class=err>（還沒有分潤連結）</span>"}</div><div>{cell}</div></div>'
+    post_card = f"""<div class=card><b>① 發文</b>
+<p><small>文字在上面，<b>分潤連結放在第一則留言</b>。每個商品每個平台只發一次。沒有分潤連結的商品不能發。</small></p>
+<form method=post action=/social/login><button class=g>第一次先按這裡：開 Chrome 登入 Threads／Facebook</button></form>
+<form method=post action=/social/fb-url class=row style="margin-top:8px"><label style="flex:3">Facebook 粉絲專頁網址<input type=text name=url value="{e(fb)}" placeholder="貼上你的粉絲專頁網址"></label><button class=g>儲存</button></form>
+<form method=post action=/social/post>
+<label><input type=checkbox name=preview value=1 checked> 只幫我貼好，<b>我自己按發佈</b>（第一次請先這樣試）</label>
+{rows_html or '<p>還沒有商品有貼文：先到「貼文」頁產生</p>'}</form></div>"""
     lt = ""
-    for x in leads:
-        lt += (f'<form method=post action=/social/lead/{x["id"]} class=card style="margin:6px 0"><small>@{e(x["author"])}｜關鍵字：{e(x["keyword"])}｜<a href="{e(x["url"])}" target=_blank>看原文</a></small>'
-               f'<div>「{e(x["text"][:200])}」</div><textarea name=draft rows=2 placeholder="自己寫一則有回應到內容的回覆（不能放連結）">{e(x["draft"])}</textarea>'
+    for x in ls:
+        lt += (f'<form method=post action=/social/reply/{x["id"]} class=card style="margin:6px 0"><small>@{e(x["author"])}｜<a href="{e(x["url"])}" target=_blank>看原文</a></small>'
+               f'<div>「{e(x["text"][:200])}」</div><textarea name=draft rows=2 placeholder="寫一則回覆（不能放連結）">{e(x["draft"])}</textarea>'
                f'{"<div class=err>" + e(x["error"]) + "</div>" if x["error"] else ""}'
-               f'<button name=act value=send>送出這一則</button> <button name=act value=skip class=g>略過</button></form>')
-    l_card = f"""<div class=card><b>④ 找話題（搜尋 Threads，逐篇確認才回）</b>
-<p><small>輸入關鍵字，列出 Threads 上相關的貼文。每一篇都要你看過、按「送出這一則」才會回，<b>不會群發</b>，也<b>不能放連結</b>。
-有選腳本 AI 才會幫你預寫草稿，沒選就自己寫。今天已回 {lead_today} 篇（上限 {config.SOCIAL_LEAD_DAILY_CAP}）。</small></p>
-<form method=post action=/social/find class=row><label style="flex:3">關鍵字<input type=text name=keyword placeholder="例如：保溫杯推薦"></label><button>搜尋</button></form>
+               f'<button>回覆這一篇</button> <button name=skip value=1 class=g>略過</button></form>')
+    find_card = f"""<div class=card><b>② Threads 搜尋後回覆</b>
+<p><small>輸入關鍵字，列出 Threads 上的相關貼文。每一篇都要你按「回覆這一篇」才會送出；回覆不能放連結；每天最多 {social.REPLY_DAILY_CAP} 篇（今天已回 {today} 篇）。</small></p>
+<form method=post action=/social/find class=row><label style="flex:3">關鍵字<input type=text name=keyword value="{e(kw)}" placeholder="例如：保溫杯推薦"></label><button>搜尋</button></form>
 {lt or '<p><small>還沒有搜尋結果</small></p>'}</div>"""
-    return page(f"<h2>發文</h2>{top}{queue_card}{q_card}{r_card}{l_card}")
+    return page(f"<h2>發文</h2>{post_card}{find_card}")
 
 
 @app.post("/social/login")
 def social_login():
-    """只開 Threads 與 Facebook（有填粉絲專頁網址就開那個）；不會開 Gemini、Flow、蝦皮。"""
+    """只開 Threads 與 Facebook；不會開 Gemini、Flow、蝦皮。"""
     urls = ["https://www.threads.com/", config.SOCIAL_FB_PAGE_URL or "https://www.facebook.com/"]
     _bg("開啟 Chrome", lambda conn: (browser.open_login_tabs(urls), "已開啟 Threads 與 Facebook，請在裡面登入")[1])
     return back("/social")
 
 
-@app.post("/social/auto")
-def social_auto(on: str = Form("0")):
-    config.save_env({"SOCIAL_AUTO": "1" if on == "1" else "0"})
-    worker.flash("自動發文已開啟：背景會依上限與間隔發佇列裡的貼文。" if on == "1" else "自動發文已停止。", "ok")
+@app.post("/social/fb-url")
+def social_fb_url(url: str = Form("")):
+    config.save_env({"SOCIAL_FB_PAGE_URL": url.strip()})
+    worker.flash("已儲存粉絲專頁網址", "ok")
     return back("/social")
 
 
-@app.post("/social/reply-auto")
-def social_reply_auto(on: str = Form("0")):
-    config.save_env({"SOCIAL_REPLY_AUTO": "1" if on == "1" else "0"})
-    worker.flash("已開啟自動回問連結的留言（每 30 分鐘掃一次最近發的貼文）。" if on == "1" else "已關閉自動回留言。", "ok")
-    return back("/social")
-
-
-@app.post("/social/queue")
-def social_queue(pid: int = Form(...), platform: str = Form(...)):
-    with db.connect() as conn:
-        try:
-            ok = social.queue(conn, pid, platform)
-            worker.flash("✅ 已排進佇列" if ok else "這個商品在這個平台已經排過／發過了", "ok" if ok else "warn")
-        except Exception as ex:  # noqa: BLE001
-            worker.flash(f"❌ {ex}", "err")
-    return back("/social")
-
-
-@app.post("/social/queue-all")
-def social_queue_all():
-    n = skip = 0
-    with db.connect() as conn:
-        for r in db.all_products(conn):
-            if r["status"] == "skipped" or not posts.load(r) or not posts.link_of(r):
-                continue
-            for plat in social.PLATFORMS:
-                try:
-                    if social.queue(conn, r["id"], plat):
-                        n += 1
-                except Exception:  # noqa: BLE001
-                    skip += 1
-    worker.flash(f"✅ 已排進 {n} 則" + (f"，{skip} 則無法排" if skip else ""), "ok")
-    return back("/social")
-
-
-@app.post("/social/post/{sid}")
-def social_post(sid: int, preview: str = Form(""), skip: str = Form("")):
-    if skip:
-        with db.connect() as conn:
-            conn.execute("UPDATE social_posts SET status='skipped' WHERE id=?", (sid,))
-        return back("/social")
+@app.post("/social/post")
+def social_post(go: str = Form(...), preview: str = Form("")):
+    pid, platform = go.split(":")
     pv = bool(preview)
-    _bg_social("預覽貼文（不發佈）" if pv else "發佈貼文", lambda conn: (social.run_queue(conn, only_id=sid, preview=pv),
-               "完成。預覽：請看自動化 Chrome 的畫面，確認後自己按發佈，或回這裡按「發佈」" if pv else "完成，狀態請看發文佇列")[1])
-    return back("/social")
-
-
-@app.post("/social/scan")
-def social_scan(platform: str = Form(...), url: str = Form(""), pid: int = Form(0)):
-    if not url.startswith("http"):
-        worker.flash("❌ 請貼上你那則貼文的完整網址", "err")
-        return back("/social")
-    _bg_social("掃描留言", lambda conn: f"新增 {social.collect(conn, platform, url.strip(), pid)} 則留言草稿")
-    return back("/social")
-
-
-@app.post("/social/reply/{rid}")
-def social_reply(rid: int, act: str = Form(...), draft: str = Form("")):
-    with db.connect() as conn:
-        if act == "approve":
-            conn.execute("UPDATE social_replies SET status='approved', draft=?, error='' WHERE id=?", (draft.strip(), rid))
-        else:
-            conn.execute("UPDATE social_replies SET status='skipped' WHERE id=?", (rid,))
-    return back("/social")
-
-
-@app.post("/social/reply-send")
-def social_reply_send():
-    _bg_social("送出回覆", lambda conn: f"已送出 {social.send_replies(conn)} 則")
+    _bg("貼好文章" if pv else "發文", lambda conn: social.publish(conn, int(pid), platform, preview=pv), "{}")
     return back("/social")
 
 
 @app.post("/social/find")
 def social_find(keyword: str = Form("")):
-    if not keyword.strip():
+    kw = keyword.strip()
+    if not kw:
         worker.flash("❌ 請輸入關鍵字", "err")
         return back("/social")
-    _bg_social("搜尋 Threads", lambda conn: f"找到 {social.find_topics(conn, keyword.strip())} 篇新的貼文")
-    return back("/social")
+    _bg("搜尋 Threads", lambda conn: f"找到 {social.find_topics(conn, kw)} 篇新的貼文", "{}")
+    return back("/social?kw=" + quote(kw))
 
 
-@app.post("/social/lead/{lid}")
-def social_lead(lid: int, act: str = Form(...), draft: str = Form("")):
-    with db.connect() as conn:
-        if act == "skip":
+@app.post("/social/reply/{lid}")
+def social_reply(lid: int, draft: str = Form(""), skip: str = Form("")):
+    if skip:
+        with db.connect() as conn:
             conn.execute("UPDATE social_leads SET status='skipped' WHERE id=?", (lid,))
-            return back("/social")
-    _bg_social("回覆貼文", lambda conn: (social.send_lead(conn, lid, draft), "已送出")[1])
+        return back("/social")
+    _bg("回覆貼文", lambda conn: (social.send_lead(conn, lid, draft), "已送出")[1], "{}")
     return back("/social")
 
 
