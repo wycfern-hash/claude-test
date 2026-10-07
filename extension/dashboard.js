@@ -9,7 +9,7 @@
   function setMsg(text, kind = 'info') { const m = $('msg'); m.textContent = text; m.className = text ? kind : ''; }
   function setBusy(b) {
     S.busy = b;
-    for (const id of ['btnFlash', 'btnSearch', 'btnShop', 'btnAff', 'btnClear', 'btnDedupe']) $(id).disabled = b;
+    for (const id of ['btnFlash', 'btnSearch', 'btnShop', 'btnAff', 'btnClear', 'btnDedupe', 'btnDedupe2']) $(id).disabled = b;
   }
 
   // ------------------------------------------------------------ 資料
@@ -452,6 +452,8 @@
   $('btnSearch').addEventListener('click', captureSearch);
   $('btnShop').addEventListener('click', captureShops);
   $('btnDedupe').addEventListener('click', dedupe);
+  $('btnDedupe2').addEventListener('click', dedupe);
+  try { $('ver').textContent = '版本 ' + chrome.runtime.getManifest().version; } catch (e) {}
   $('btnUndo').addEventListener('click', undoDedupe);
   $('btnAff').addEventListener('click', convertAffiliate);
   const requestStop = async () => { S.stopCapture = true; await chrome.storage.local.set({ stop: true }); setMsg('已要求停止（幾秒內會停）。', 'warn'); };
