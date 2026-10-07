@@ -3,25 +3,59 @@
   "name": "蝦皮特賣分潤小幫手",
   "version": "1.0.0",
   "description": "抓蝦皮限時特賣與特價商品（含場次日期時間、開賣倒數），用你登入的分潤後台一鍵轉成分潤連結，並匯出 CSV。",
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["https://shopee.tw/*", "https://affiliate.shopee.tw/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "蝦皮特賣分潤小幫手" },
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://shopee.tw/*",
+    "https://affiliate.shopee.tw/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "蝦皮特賣分潤小幫手"
+  },
   "content_scripts": [
     {
-      "matches": ["https://shopee.tw/*"],
-      "js": ["inject.js"],
+      "matches": [
+        "https://shopee.tw/*"
+      ],
+      "js": [
+        "inject.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://shopee.tw/*"],
-      "js": ["lib/parse.js", "content.js"],
+      "matches": [
+        "https://shopee.tw/*"
+      ],
+      "js": [
+        "lib/parse.js",
+        "content.js"
+      ],
       "run_at": "document_start"
     },
     {
-      "matches": ["https://affiliate.shopee.tw/*"],
-      "js": ["lib/affiliate.js", "affiliate_content.js"],
+      "matches": [
+        "https://affiliate.shopee.tw/*"
+      ],
+      "js": [
+        "inject_affiliate.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://affiliate.shopee.tw/*"
+      ],
+      "js": [
+        "lib/affiliate.js",
+        "affiliate_content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

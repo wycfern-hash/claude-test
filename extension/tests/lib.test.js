@@ -157,3 +157,54 @@ test('批次轉換請求與回應', () => {
   assert.equal(res[2].err, '沒有回傳短連結');
   assert.equal(A.parseBatchResponse({ errors: [{ message: 'x' }] }, urls), null);     // 格式不符 → 呼叫端改走備援
 });
+
+// ---------------------------------------------------------------- 向後台學：批次轉換
+test('學習：陣列型請求 → 可批次，並照樣子組出多個', () => {
+  const req = { url: '/api/v9/bulk_links?x=1', method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'make', opts: { sub: '' }, links: [{ raw: 'https://shopee.tw/product/1/2', tag: 'a' }] }) };
+  const tpl = A.learnTemplate(req, '{"results":[{"short":"https://s.shopee.tw/AAA"}]}');
+  assert.ok(tpl && tpl.batch);
+  assert.deepEqual(tpl.arrayPath, ['links']);
+  assert.deepEqual(tpl.elemPath, ['raw']);
+  const urls = ['https://shopee.tw/product/3/4', 'https://shopee.tw/product/5/6', 'https://shopee.tw/product/7/8'];
+  const b = JSON.parse(A.buildFromTemplate(tpl, urls).body);
+  assert.equal(b.links.length, 3);
+  assert.equal(b.links[2].raw, urls[2]);
+  assert.equal(b.links[1].tag, 'a');                // 其他欄位照抄
+  assert.equal(b.op, 'make');
+});
+
+test('學習：單筆型請求 → 不能批次，一次只放一個', () => {
+  const req = { url: '/api/x', method: 'POST', headers: {}, body: JSON.stringify({ url: 'https://shopee.tw/product/1/2', subId: '' }) };
+  const tpl = A.learnTemplate(req, 'ok https://s.shopee.tw/ZZZ');
+  assert.equal(tpl.batch, false);
+  const out = A.buildFromTemplate(tpl, ['https://shopee.tw/product/9/9', 'https://shopee.tw/product/8/8']);
+  assert.equal(out.count, 1);
+  assert.equal(JSON.parse(out.body).url, 'https://shopee.tw/product/9/9');
+});
+
+test('學習：最外層就是陣列、巢狀很深也找得到', () => {
+  const top = A.learnTemplate({ url: '/a', body: JSON.stringify([{ link: 'https://shopee.tw/product/1/2' }]) }, 'https://s.shopee.tw/Q');
+  assert.deepEqual(top.arrayPath, []);
+  const b = JSON.parse(A.buildFromTemplate(top, ['https://shopee.tw/product/3/3', 'https://shopee.tw/product/4/4']).body);
+  assert.equal(b.length, 2);
+  const deep = A.learnTemplate({ url: '/a', body: JSON.stringify({ a: { b: [{ c: { d: 'https://shopee.tw/product/1/2' } }] } }) }, 'https://s.shopee.tw/Q');
+  assert.deepEqual(deep.arrayPath, ['a', 'b']);
+  assert.deepEqual(deep.elemPath, ['c', 'd']);
+});
+
+test('學習：回應沒有短連結、body 不是 JSON、body 裡沒有商品網址 → 學不到', () => {
+  const ok = JSON.stringify({ url: 'https://shopee.tw/product/1/2' });
+  assert.equal(A.learnTemplate({ url: '/a', body: ok }, '{"error":1}'), null);
+  assert.equal(A.learnTemplate({ url: '/a', body: 'a=b&c=d' }, 'https://s.shopee.tw/Q'), null);
+  assert.equal(A.learnTemplate({ url: '/a', body: JSON.stringify({ url: 'https://example.com/x' }) }, 'https://s.shopee.tw/Q'), null);
+  assert.equal(A.learnTemplate({ url: '/a', body: JSON.stringify({ url: 'https://s.shopee.tw/Q' }) }, 'https://s.shopee.tw/R'), null);
+});
+
+test('回應對應：數量對得上才算，順序不變、去重', () => {
+  const urls = ['u1', 'u2'];
+  assert.deepEqual(A.mapResponseToUrls('{"a":"https://s.shopee.tw/A","b":"https://s.shopee.tw/B"}', urls).map((x) => x.short), ['https://s.shopee.tw/A', 'https://s.shopee.tw/B']);
+  assert.equal(A.mapResponseToUrls('https://s.shopee.tw/A', urls), null);
+  assert.deepEqual(A.extractShortLinks('https://s.shopee.tw/A https://s.shopee.tw/A https://shp.ee/B'), ['https://s.shopee.tw/A', 'https://shp.ee/B']);
+  assert.deepEqual(A.CHUNK_STEPS, [20, 10, 5, 1]);
+});

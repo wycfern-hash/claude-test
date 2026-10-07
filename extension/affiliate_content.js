@@ -26,6 +26,33 @@
     return out;
   }
 
+  // 你手動轉 1 個連結時，記下後台真正的請求格式（見 inject_affiliate.js）
+  window.addEventListener('message', async (ev) => {
+    const d = ev.data;
+    if (ev.source !== window || !d || d.__scAff !== 1) return;
+    const tpl = SC.learnTemplate(d.req, d.res);
+    if (tpl) await chrome.storage.local.set({ affTemplate: tpl });
+  });
+
+  // 用學到的格式送出（一次放很多個）。回傳 { results, size }；整批被拒就丟錯，呼叫端會減量重試。
+  async function viaTemplate(tpl, urls) {
+    const { body, count } = SC.buildFromTemplate(tpl, urls);
+    const headers = { ...(tpl.headers || {}) };
+    const csrf = (document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/) || [])[1];
+    if (csrf && !headers['csrf-token'] && 'csrf-token' in (tpl.headers || {})) headers['csrf-token'] = csrf;
+    const r = await fetch(tpl.url, { method: tpl.method || 'POST', credentials: 'include', headers, body });
+    const text = await r.text();
+    if (!r.ok) throw new Error('後台回應 ' + r.status);
+    if (count < urls.length) throw new Error('這個後台一次只能轉 1 個');
+    if (urls.length === 1) {                       // 單筆：沒回短連結只算這一筆失敗，不要讓整批降級
+      const sh = SC.extractShortLinks(text)[0];
+      return [{ url: urls[0], short: sh || null, err: sh ? '' : '後台沒有回傳短連結（這個商品可能不能轉）' }];
+    }
+    const results = SC.mapResponseToUrls(text, urls);
+    if (!results) throw new Error('後台回傳的連結數量對不上');
+    return results;
+  }
+
   const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
   function setValue(el, v) {
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -58,34 +85,52 @@
     return null;
   }
 
+  async function saveResults(part, results) {
+    let ok = 0, bad = 0;
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
+      if (r.short) { ok++; await setAff(part[j].key, { url: r.short, state: 'ok', at: Date.now() }); }
+      else { bad++; await setAff(part[j].key, { url: '', state: 'fail', err: r.err, at: Date.now() }); }
+    }
+    return { ok, bad };
+  }
+
   async function convert(items) {
-    let via = 'gql', gqlErr = '', done = 0, failed = 0;
-    const CHUNK = 5;
-    for (let i = 0; i < items.length; i += CHUNK) {
+    const tpl = (await chrome.storage.local.get('affTemplate')).affTemplate || null;
+    let method = tpl ? 'learned' : 'gql';          // learned：照你手動轉時學到的格式；gql：我猜的格式；dom：模擬手動操作
+    let steps = tpl && tpl.batch ? SC.CHUNK_STEPS.slice() : [1];
+    let size = tpl ? steps[0] : 5, gqlErr = '', done = 0, failed = 0, biggest = 0, i = 0;
+    while (i < items.length) {
       if (await stopped()) break;
-      const part = items.slice(i, i + CHUNK);
+      const part = items.slice(i, i + (method === 'dom' ? 1 : size));
+      const urls = part.map((x) => x.url);
       let results = null;
-      if (via === 'gql') {
-        try { results = await viaGql(part.map((x) => x.url)); } catch (e) { via = 'dom'; gqlErr = e.message; }
-      }
-      if (!results) {
-        results = [];
-        for (const it of part) {
-          if (await stopped()) break;
-          try { const s = await viaDom(it.url); results.push({ url: it.url, short: s, err: s ? '' : '頁面上沒有出現短連結' }); }
-          catch (e) { results.push({ url: it.url, short: null, err: e.message }); }
-          await sleep(rand(1200, 2600));
+      if (method === 'dom') {
+        const it = part[0];
+        let r;
+        try { const sh = await viaDom(it.url); r = { url: it.url, short: sh, err: sh ? '' : '頁面上沒有出現短連結' }; }
+        catch (e) { r = { url: it.url, short: null, err: e.message }; }
+        results = [r];
+        await sleep(rand(1200, 2600));
+      } else {
+        try {
+          results = method === 'learned' ? await viaTemplate(tpl, urls) : await viaGql(urls);
+        } catch (e) {
+          gqlErr = e.message;
+          if (method === 'learned' && size > 1) {                           // 整批被拒：減量再試（20→10→5→1）
+            steps = steps.filter((n) => n < size); size = steps[0] || 1;
+            continue;
+          }
+          method = 'dom';                                                   // 都不行：最後才一個一個模擬操作
+          continue;
         }
       }
-      for (let j = 0; j < results.length; j++) {
-        const r = results[j];
-        if (r.short) { done++; await setAff(part[j].key, { url: r.short, state: 'ok', at: Date.now() }); }
-        else { failed++; await setAff(part[j].key, { url: '', state: 'fail', err: r.err, at: Date.now() }); }
-      }
+      const { ok, bad } = await saveResults(part, results);
+      done += ok; failed += bad; i += part.length; biggest = Math.max(biggest, part.length);
       chrome.storage.local.set({ progress: { text: `轉換分潤連結 ${done + failed}/${items.length}（成功 ${done}、失敗 ${failed}）`, at: Date.now() } });
-      await sleep(rand(700, 1500));
+      await sleep(rand(600, 1400));
     }
-    return { ok: true, done, failed, via, gqlErr };
+    return { ok: true, done, failed, via: method, gqlErr, batch: biggest };
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

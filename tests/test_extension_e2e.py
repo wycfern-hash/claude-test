@@ -30,6 +30,8 @@ def mk_items(promo: int, base_id: int, n: int, start: int, end: int):
 class Mock(BaseHTTPRequestHandler):
     gql_mode = "ok"
     now = int(time.time())
+    visits: list = []          # /flash_sale 被開過哪些場次
+    bulk: list = []            # /api/v9/bulk_links 每次收到幾個、回應碼
 
     def log_message(self, *a):
         pass
@@ -46,7 +48,8 @@ class Mock(BaseHTTPRequestHandler):
         n = cls.now
         return [{"promotionid": 1, "start_time": n - 600, "end_time": n + 3000, "name": "進行中"},
                 {"promotionid": 2, "start_time": n + 3600, "end_time": n + 7200, "name": "下一場"},
-                {"promotionid": 3, "start_time": n - 7200, "end_time": n - 3600, "name": "已結束"}]
+                {"promotionid": 3, "start_time": n - 7200, "end_time": n - 3600, "name": "已結束"},
+                {"promotionid": 6, "start_time": n + 10800, "end_time": n + 14400, "name": "會被轉到首頁"}]
 
     def promo_items(self, promo):
         s = {x["promotionid"]: x for x in self.sessions()}[promo]
@@ -58,12 +61,22 @@ class Mock(BaseHTTPRequestHandler):
         if u.path == "/__mode":
             Mock.gql_mode = q["gql"][0]
             return self._send("ok", "text/plain")
+        if u.path == "/__reset":
+            Mock.visits, Mock.bulk = [], []
+            return self._send("ok", "text/plain")
+        if u.path == "/__log":
+            return self._send(json.dumps({"visits": Mock.visits, "bulk": Mock.bulk}))
+        if u.path == "/":
+            return self._send(HOME_HTML, "text/html")
         if u.path == "/flash_sale":
+            Mock.visits.append(int(q.get("promotionId", ["0"])[0]))
+            if q.get("promotionId", [""])[0] == "6":   # 蝦皮把這個場次網址轉到首頁
+                return self._send("<!doctype html><script>location.replace('/')</script>", "text/html")
             return self._send(FLASH_HTML, "text/html")
         if u.path == "/search":
             return self._send(SEARCH_HTML, "text/html")
         if u.path == "/offer/custom_link":
-            return self._send(AFF_HTML, "text/html")
+            return self._send(AFF_HTML if Mock.gql_mode != "bulk" else AFF_BULK_HTML, "text/html")
         if u.path == "/api/v4/flash_sale/get_all_sessions":
             return self._send(json.dumps({"error": 0, "data": {"sessions": self.sessions()}}))
         if u.path == "/api/v4/flash_sale/get_all_itemids":
@@ -90,7 +103,18 @@ class Mock(BaseHTTPRequestHandler):
             promo = body["promotionid"]
             base, n, s = self.promo_items(promo)
             items = [x for x in mk_items(promo, base, n, s["start_time"], s["end_time"]) if x["itemid"] in body["itemids"]]
+            items += [x for x in mk_items(promo, 900, 5, s["start_time"], s["end_time"]) if x["itemid"] in body["itemids"]]
             return self._send(json.dumps({"error": 0, "data": {"items": items}}))
+        if u.path == "/api/v9/bulk_links":   # 和我猜的格式完全不同的後台：一次最多收 7 個
+            links = body["links"]
+            Mock.bulk.append([len(links), 400 if len(links) > 7 else 200])
+            if len(links) > 7:
+                return self._send(json.dumps({"error": "too many"}), code=400)
+            out = []
+            for lk in links:
+                m = re.search(r"/product/(\d+)/(\d+)", lk["raw"])
+                out.append({"short": f"https://s.shopee.tw/L{m.group(1)}_{m.group(2)}"})
+            return self._send(json.dumps({"results": out}))
         if u.path == "/api/v3/gql":
             if Mock.gql_mode != "ok":
                 return self._send(json.dumps({"errors": ["nope"]}), code=404)
@@ -105,6 +129,14 @@ class Mock(BaseHTTPRequestHandler):
         self._send("not found", "text/plain", 404)
 
 
+HOME_HTML = """<!doctype html><meta charset=utf-8><body>蝦皮首頁（有一個限時特賣小區塊）<script>
+(async () => {
+  await fetch('/api/v4/flash_sale/get_all_sessions').then(r => r.json());
+  await fetch('/api/v4/flash_sale/flash_sale_batch_get_items', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ promotionid: 1, itemids: [900, 901, 902, 903, 904], limit: 5 }) }).then(r => r.json());
+  const d = document.createElement('div'); d.style.height = '6000px'; document.body.appendChild(d);   // 首頁很長
+})();
+</script>"""
 FLASH_HTML = """<!doctype html><meta charset=utf-8><body><div id=list></div><script>
 const promo = +(new URLSearchParams(location.search).get('promotionId') || 1);
 let ids = [], loaded = 0, loading = false;
@@ -134,6 +166,15 @@ const x = new XMLHttpRequest();
 x.open('GET', '/api/v4/search/search_items?keyword=' + encodeURIComponent(p.get('keyword')) + '&newest=' + (+(p.get('page') || 0) * 60));
 x.onload = () => { document.body.textContent = JSON.parse(x.responseText).items.length + ' items'; };
 x.send();
+</script>"""
+AFF_BULK_HTML = """<!doctype html><meta charset=utf-8><body><h3>自訂連結（另一種後台）</h3>
+<input type=text placeholder="貼上商品連結" style="width:400px"><button>取得連結</button><div id=out></div>
+<script>
+document.querySelector('button').onclick = async () => {
+  const v = document.querySelector('input').value;
+  const r = await fetch('/api/v9/bulk_links', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ links: [{ raw: v }] }) }).then(r => r.json());
+  document.getElementById('out').textContent = '您的連結：' + r.results[0].short;
+};
 </script>"""
 AFF_HTML = """<!doctype html><meta charset=utf-8><body><h3>自訂連結</h3>
 <input type=text placeholder="貼上商品連結" style="width:400px"><button>取得連結</button><div id=out></div>
@@ -203,7 +244,8 @@ def test_full_flow(dash, site):
     page = dash
 
     # ---- ① 限時特賣：分批懶載入的 40 個 + 下一場 20 個；已結束的場次不抓
-    page.fill("#flashUrl", f"{site}/flash_sale?promotionId=1")
+    page.fill("#flashUrls", f"{site}/flash_sale?promotionId=1")
+    page.fill("#moreSessions", "1")                      # 再多抓 1 個後面的場次（= 場次 2）
     page.click("#btnFlash")
     msg = wait_msg(page, "完成：讀了 \\d+ 個場次")
     assert "讀了 2 個場次" in msg and "共 60 個商品" in msg, msg
@@ -226,7 +268,7 @@ def test_full_flow(dash, site):
     # ---- ② 轉分潤連結（GraphQL 路）：其中 itemid 139 回傳失敗代碼
     page.click("#btnAff")
     wait_msg(page, "完成.*成功 \\d+ 個")
-    page.wait_for_function("document.getElementById('statAff').textContent === '59'", timeout=20000)
+    page.wait_for_function("() => document.getElementById('statAff').textContent === '59'", timeout=20000)
     r = rows(page)
     assert sum("https://s.shopee.tw/G7_" in x[5] for x in r) == 59
     bad = [x for x in r if "139" in x[1]]
@@ -278,5 +320,103 @@ def test_full_flow(dash, site):
     with page.expect_download() as dl:
         page.click("#btnDiag")
     diag = json.loads(Path(dl.value.path()).read_text(encoding="utf-8"))
-    assert diag["itemCount"] >= 65 and diag["captured"] and len(diag["sessions"]) == 3
+    assert diag["itemCount"] >= 65 and diag["captured"] and len(diag["sessions"]) == 4
+    assert diag["captureLog"]["sessions"] and diag["captureLog"]["sessions"][0]["promotionid"] == "1"
     assert any(c["source"] == "flash" and c["items"] > 0 for c in diag["captured"])
+
+
+def reset_state(page, site):
+    import urllib.request
+    urllib.request.urlopen(f"{site}/__reset").read()
+    page.click("#btnClear")
+    page.wait_for_function("() => document.getElementById('statAll').textContent === '0'", timeout=10000)
+
+
+def server_log(site):
+    import urllib.request
+    return json.loads(urllib.request.urlopen(f"{site}/__log").read())
+
+
+def test_session_redirected_to_homepage_is_skipped_and_homepage_data_ignored(dash, site):
+    """蝦皮把場次網址轉到首頁時：跳過、不收首頁（首頁也有限時特賣小區塊）的資料、不會在首頁一直捲動。"""
+    page = dash
+    reset_state(page, site)
+    page.fill("#flashUrls", f"{site}/flash_sale?promotionId=1")
+    page.fill("#moreSessions", "3")                      # 會依序試場次 2、6（6 會被轉到首頁）
+    page.click("#btnFlash")
+    msg = wait_msg(page, "完成|已停止")
+    assert "讀了 2 個場次" in msg and "被蝦皮轉走、已跳過" in msg, msg
+    assert "轉到別的頁面" in page.inner_text("#capLog")
+    r = rows(page)
+    assert len(r) == 60                                   # 場次 1 的 40 個 + 場次 2 的 20 個，沒有首頁的 5 個
+    assert not any("限時商品1-90" in x[1] for x in r)
+    assert server_log(site)["visits"].count(6) == 1       # 轉走的場次只試一次，不會重複
+
+
+def test_same_session_pasted_twice_is_captured_once(dash, site):
+    page = dash
+    reset_state(page, site)
+    page.fill("#flashUrls", f"{site}/flash_sale?promotionId=1\n{site}/flash_sale?promotionId=1\n\n{site}/flash_sale?promotionId=2")
+    page.fill("#moreSessions", "0")
+    page.click("#btnFlash")
+    msg = wait_msg(page, "完成")
+    assert "讀了 2 個場次" in msg and "共 60 個商品" in msg, msg
+    assert server_log(site)["visits"] == [1, 2]           # 每個場次只開一次
+
+
+def test_stop_button_really_stops(dash, site):
+    page = dash
+    reset_state(page, site)
+    page.fill("#flashUrls", f"{site}/flash_sale?promotionId=1")
+    page.fill("#moreSessions", "5")
+    page.click("#btnFlash")
+    page.wait_for_function("() => document.getElementById('capLog').textContent.length > 0 || document.getElementById('msg').textContent.includes('讀取')", timeout=60000)
+    page.click("#btnStopFlash")
+    t0 = time.time()
+    msg = wait_msg(page, "已停止|完成", 60000)
+    assert "已停止" in msg or time.time() - t0 < 60
+    assert not page.is_disabled("#btnFlash")             # 停下來後按鈕恢復可按
+    assert len(server_log(site)["visits"]) <= 2
+
+
+def test_learns_portal_format_and_converts_in_batches(dash, site):
+    """假後台的請求格式和程式內建猜的完全不同，且一次最多收 7 個。
+    使用者手動轉 1 個 → 小幫手學到格式 → 之後批次送（20 被拒 → 10 被拒 → 5 成功），不是一個一個轉。"""
+    import urllib.request
+    page = dash
+    reset_state(page, site)
+    urllib.request.urlopen(f"{site}/__mode?gql=bulk").read()       # 內建猜的 gql 路徑在這個後台不存在（404）
+    page.fill("#flashUrls", f"{site}/flash_sale?promotionId=1")
+    page.fill("#moreSessions", "0")
+    page.click("#btnFlash")
+    wait_msg(page, "完成")
+    assert len(rows(page)) == 40
+    assert "還沒學會" in page.inner_text("#affLearn")
+
+    # 使用者在分潤後台手動轉 1 個
+    portal = page.context.new_page()
+    portal.goto(f"{site}/offer/custom_link")
+    portal.fill("input", "https://shopee.tw/product/7/100")
+    portal.click("text=取得連結")
+    portal.wait_for_function("() => document.getElementById('out').textContent.includes('s.shopee.tw')")
+    page.bring_to_front()
+    page.wait_for_function("() => document.getElementById('affLearn').textContent.includes('已學會')", timeout=15000)
+    assert "可以一次轉很多個" in page.inner_text("#affLearn")
+    portal.close()
+
+    urllib.request.urlopen(f"{site}/__reset").read()
+    page.click("#btnAff")
+    msg = wait_msg(page, "完成.*成功 \\d+ 個", 120000)
+    assert "照你後台的做法" in msg and "成功 40 個、失敗 0 個" in msg, msg
+    sizes = server_log(site)["bulk"]
+    accepted = [n for n, code in sizes if code == 200]
+    rejected = [n for n, code in sizes if code == 400]
+    assert rejected == [20, 10], sizes                    # 先試 20、10 被拒，自動減量
+    assert max(accepted) == 5 and sum(accepted) == 40     # 之後每批 5 個，共 40 個
+    assert len(accepted) == 8                             # 8 次請求，不是 40 次
+    r = rows(page)
+    assert all(re.search(r"https://s\.shopee\.tw/L7_\d+", x[5]) for x in r)
+    # 清空資料後，已學會的做法仍保留
+    page.click("#btnClear")
+    page.wait_for_function("() => document.getElementById('statAll').textContent === '0'")
+    assert "已學會" in page.inner_text("#affLearn")

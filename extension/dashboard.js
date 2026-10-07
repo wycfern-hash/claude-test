@@ -14,13 +14,15 @@
 
   // ------------------------------------------------------------ 資料
   async function load() {
-    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress']);
+    const g = await chrome.storage.local.get(['items', 'sessions', 'aff', 'diag', 'progress', 'affTemplate']);
+    S.tpl = g.affTemplate || null;
     S.items = g.items || {}; S.sessions = g.sessions || {}; S.aff = g.aff || {}; S.diag = g.diag || []; S.progress = g.progress || null;
     render();
   }
   let renderTimer = null;
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
+    if (ch.affTemplate) { S.tpl = ch.affTemplate.newValue || null; renderLearn(); }
     for (const k of ['items', 'sessions', 'aff', 'diag', 'progress']) if (ch[k]) S[k] = ch[k].newValue || (k === 'diag' ? [] : k === 'progress' ? null : {});
     clearTimeout(renderTimer);
     renderTimer = setTimeout(render, 250);
@@ -57,7 +59,13 @@
     return '<span class="warnx">尚未轉換（還不是分潤連結）</span>';
   }
 
+  function renderLearn() {
+    $('affLearn').innerHTML = S.tpl
+      ? `分潤後台做法：<b class="good">已學會 ✓</b>（${S.tpl.batch ? '可以一次轉很多個' : '這個後台一次只能轉 1 個'}）`
+      : '分潤後台做法：<b class="warnx">還沒學會</b>（會先用猜的；猜不中就一個一個轉，比較慢）';
+  }
   function render() {
+    renderLearn();
     const all = viewRows();
     const rows = currentRows();
     const withAff = all.filter((r) => r.aff && r.aff.url).length;
@@ -111,11 +119,19 @@
     await waitComplete(tabId);
     return { winId: w.id, tabId };
   }
-  async function gotoAndScroll(tabId, url, maxMs, quietMs) {
+  // 開網址並確認真的停在預期的頁面（蝦皮可能把網址轉到首頁），是的話才往下捲。回傳 { skipped, url } 或捲動結果。
+  async function onExpectedPage(tabId, expectPath) {
+    await sleep(1200);                       // 給蝦皮一點時間做轉址
+    const r = await ping(tabId);
+    return { ok: new URL(r.url).pathname.startsWith(expectPath), url: r.url };
+  }
+  async function gotoAndScroll(tabId, url, maxMs, quietMs, expectPath) {
     await chrome.tabs.update(tabId, { url });
     await waitComplete(tabId);
     await ping(tabId);
-    return chrome.tabs.sendMessage(tabId, { cmd: 'autoscroll', maxMs, quietMs });
+    const where = await onExpectedPage(tabId, expectPath);
+    if (!where.ok) return { skipped: true, url: where.url, seen: 0 };
+    return chrome.tabs.sendMessage(tabId, { cmd: 'autoscroll', maxMs, quietMs, expectPath });
   }
   const closeWin = (id) => chrome.windows.remove(id).catch(() => {});
   const base = () => SC.config.shopeeBase;
@@ -125,38 +141,76 @@
     const t = text.trim();
     if (/^\d{6,}$/.test(t)) return `${base()}/flash_sale?promotionId=${t}`;
     if (/^https?:\/\//.test(t)) return t;
-    throw new Error('請貼限時特賣的網址（例如 https://shopee.tw/flash_sale?promotionId=...）或場次 ID');
+    throw new Error('請貼限時特賣的網址（例如 https://shopee.tw/flash_sale?promotionId=...）或場次 ID，一行一個');
   }
+  const flashCount = async () => Object.values((await chrome.storage.local.get('items')).items || {}).filter((x) => x.source === 'flash').length;
+  const promoOfUrl = (u) => { try { return new URL(u).searchParams.get('promotionId') || ''; } catch (e) { return ''; } };
+  let capLines = [];
+  function capLog(line) { if (line === null) capLines = []; else capLines.push(line); $('capLog').textContent = capLines.join('\n'); }
+  const MAX_TOTAL_MS = 10 * 60 * 1000;
+  const SKIP_HINT = '蝦皮把這個場次網址轉到別的頁面（通常是首頁）了，已跳過，沒有收首頁的資料。';
+
   async function captureFlash() {
-    const first = flashUrl($('flashUrl').value);
-    const startPromo = new URL(first).searchParams.get('promotionId') || '';
+    const lines = $('flashUrls').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    if (!lines.length) throw new Error('請先貼限時特賣的網址。');
+    const urls = [];
+    const seenPromo = new Set();
+    for (const l of lines) {                     // 同一個場次貼了兩次也只抓一次
+      const u = flashUrl(l);
+      const pid = promoOfUrl(u) || u;
+      if (!seenPromo.has(pid)) { seenPromo.add(pid); urls.push(u); }
+    }
+    const extra = Math.max(0, Math.min(10, parseInt($('moreSessions').value, 10) || 0));
     S.stopCapture = false;
+    await chrome.storage.local.set({ stop: false });
     setBusy(true);
-    setMsg('開啟限時特賣頁…會開新視窗並自動往下捲動，請不要關掉。', 'info');
-    let win = null;
+    capLog(null);
+    const t0 = Date.now();
+    const tried = new Set(urls.map((u) => promoOfUrl(u)).filter(Boolean));   // 已「要求過」的場次：不管有沒有被轉址，絕不抓第二次
+    const log = [];
+    let win = null, sessionsDone = 0, skipped = 0, stopped = false;
+    const record = (label, promo, r, added) => {
+      log.push({ promotionid: promo, seen: r.seen || 0, added, skipped: !!r.skipped, redirectedTo: r.url || r.redirected || '', stopped: !!r.stopped });
+      if (r.skipped || r.redirected) { skipped++; capLog(`⚠ ${label}：${SKIP_HINT}`); }
+      else { sessionsDone++; capLog(`✓ ${label}：讀到 ${r.seen} 個商品，新增 ${added} 個`); }
+      if (r.stopped) stopped = true;
+    };
     try {
-      win = await openWindow(first);
-      await ping(win.tabId);
-      setMsg('讀取商品中…（自動往下捲動）', 'info');
-      let r = await chrome.tabs.sendMessage(win.tabId, { cmd: 'autoscroll', maxMs: 150000, quietMs: SC.config.quietMs });
-      let total = r.seen, sessionsDone = 1;
-      if ($('allSessions').checked) {
-        const done = new Set([startPromo]);
-        for (let guard = 0; guard < 12 && !S.stopCapture; guard++) {
-          const sess = (await chrome.storage.local.get('sessions')).sessions || {};
-          const next = Object.values(sess).filter((s) => !done.has(s.promotionid) && s.end * 1000 > Date.now()).sort((a, b) => a.start - b.start)[0];
-          if (!next) break;
-          done.add(next.promotionid);
-          setMsg(`讀取其他場次：${SC.fmtRange(next.start, next.end)}…`, 'info');
-          r = await gotoAndScroll(win.tabId, `${base()}/flash_sale?promotionId=${next.promotionid}`, 120000, SC.config.quietMs);
-          total += r.seen; sessionsDone++;
+      setMsg('開啟限時特賣頁…會開新視窗並自動往下捲動，請不要關掉。', 'info');
+      for (let i = 0; i < urls.length && !stopped && !S.stopCapture; i++) {
+        const before = await flashCount();
+        let r;
+        if (!win) {
+          win = await openWindow(urls[i]);
+          await ping(win.tabId);
+          const where = await onExpectedPage(win.tabId, '/flash_sale');
+          r = where.ok ? await chrome.tabs.sendMessage(win.tabId, { cmd: 'autoscroll', maxMs: 100000, quietMs: SC.config.quietMs, expectPath: '/flash_sale' })
+            : { skipped: true, url: where.url, seen: 0 };
+        } else {
+          setMsg(`讀取第 ${i + 1}/${urls.length} 個網址…（可以按「停止」）`, 'info');
+          r = await gotoAndScroll(win.tabId, urls[i], 100000, SC.config.quietMs, '/flash_sale');
         }
+        record(`網址 ${i + 1}（場次 ${promoOfUrl(urls[i]) || '未指定'}）`, promoOfUrl(urls[i]), r, (await flashCount()) - before);
       }
-      const n = Object.values((await chrome.storage.local.get('items')).items || {}).filter((x) => x.source === 'flash').length;
+      for (let k = 0; k < extra && !stopped && !S.stopCapture; k++) {   // 實驗性：自動找後面的場次
+        if (Date.now() - t0 > MAX_TOTAL_MS) { capLog('⏱ 已超過 10 分鐘，自動停止。'); break; }
+        const sess = (await chrome.storage.local.get('sessions')).sessions || {};
+        const next = Object.values(sess).filter((s) => !tried.has(s.promotionid) && s.end * 1000 > Date.now()).sort((a, b) => a.start - b.start)[0];
+        if (!next) { capLog('（沒有更多還沒結束的場次了）'); break; }
+        tried.add(next.promotionid);
+        setMsg(`試著讀取後面的場次：${SC.fmtRange(next.start, next.end)}…（可以按「停止」）`, 'info');
+        const before = await flashCount();
+        const r = await gotoAndScroll(win.tabId, `${base()}/flash_sale?promotionId=${next.promotionid}`, 90000, SC.config.quietMs, '/flash_sale');
+        record(`場次 ${SC.fmtRange(next.start, next.end)}`, next.promotionid, r, (await flashCount()) - before);
+      }
+      await chrome.storage.local.set({ captureLog: { at: new Date().toISOString(), sessions: log } });
+      const n = await flashCount();
+      const stoppedByUser = S.stopCapture || stopped;
       if (!n) {
-        setMsg('沒有讀到任何限時特賣商品。可能是：頁面要求登入／驗證、蝦皮改版、或網址錯誤。請先在 Chrome 正常打開那個網址確認看得到商品，再重試；仍不行請按「下載診斷檔」傳給我。', 'err');
+        setMsg('沒有讀到任何限時特賣商品。可能是：頁面要求登入／驗證、網址被蝦皮轉走（場次已結束或網址不對）、或蝦皮改版。請先在 Chrome 正常打開那個網址確認看得到商品，再重試；仍不行請按「下載診斷檔」傳給我。', 'err');
       } else {
-        setMsg(`✅ 完成：讀了 ${sessionsDone} 個場次，限時特賣共 ${n} 個商品。下一步按「② 轉成分潤連結」。`, 'ok');
+        setMsg(`${stoppedByUser ? '⏹ 已停止。' : '✅ 完成：'}讀了 ${sessionsDone} 個場次${skipped ? `（另有 ${skipped} 個被蝦皮轉走、已跳過）` : ''}，限時特賣共 ${n} 個商品。下一步按「② 轉成分潤連結」。`,
+          stoppedByUser || skipped ? 'warn' : 'ok');
       }
     } catch (e) {
       setMsg('❌ ' + e.message, 'err');
@@ -181,8 +235,8 @@
       for (let p = 0; p < pages && !S.stopCapture; p++) {
         const url = `${base()}/search?keyword=${encodeURIComponent(kw)}&page=${p}&sortBy=${sort}`;
         setMsg(`搜尋「${kw}」第 ${p + 1}/${pages} 頁…（新視窗自動捲動，請不要關掉）`, 'info');
-        if (!win) { win = await openWindow(url); tabId = win.tabId; await ping(tabId); await chrome.tabs.sendMessage(tabId, { cmd: 'autoscroll', maxMs: 60000, quietMs: SC.config.searchQuietMs }); }
-        else await gotoAndScroll(tabId, url, 60000, SC.config.searchQuietMs);
+        if (!win) { win = await openWindow(url); tabId = win.tabId; await ping(tabId); await chrome.tabs.sendMessage(tabId, { cmd: 'autoscroll', maxMs: 60000, quietMs: SC.config.searchQuietMs, expectPath: '/search' }); }
+        else await gotoAndScroll(tabId, url, 60000, SC.config.searchQuietMs, '/search');
       }
       const minPct = +$('minPctSearch').value || 0;
       $('fPct').value = minPct;
@@ -221,7 +275,9 @@
         const probe = await chrome.tabs.sendMessage(win.tabId, { cmd: 'probe' }).catch(() => null);
         await chrome.storage.local.set({ diagAffiliate: { at: new Date().toISOString(), via: r.via, gqlErr: r.gqlErr, probe } });
       }
-      const how = r && r.via === 'gql' ? '' : '（用模擬操作的方式，速度較慢）';
+      const how = !r ? '' : r.via === 'learned' ? `（照你後台的做法，一次最多轉 ${r.batch} 個）`
+        : r.via === 'gql' ? `（一次轉 ${r.batch} 個）`
+          : '（用模擬操作一個一個轉，比較慢。建議先按「學習後台做法」手動轉 1 個，之後就能一次轉很多個）';
       setMsg(r && r.ok ? `完成${how}：成功 ${r.done} 個、失敗 ${r.failed} 個。` + (r.failed ? '失敗的會標示原因；可以再按一次重試，或下載診斷檔給我。' : '')
         : '轉換中斷：' + ((r && r.error) || '未知原因'), r && r.failed === 0 ? 'ok' : 'warn');
     } catch (e) {
@@ -261,12 +317,12 @@
     setMsg(`已複製 ${rows.length} 個商品的文案（含分潤連結）。`, 'ok');
   }
   async function downloadDiag() {
-    const g = await chrome.storage.local.get(['diag', 'diagAffiliate', 'sessions', 'items']);
+    const g = await chrome.storage.local.get(['diag', 'diagAffiliate', 'sessions', 'items', 'captureLog']);
     const items = Object.values(g.items || {});
     download(`shopee_helper_diag_${stamp()}.json`, JSON.stringify({
       version: chrome.runtime.getManifest().version, userAgent: navigator.userAgent, now: new Date().toISOString(),
       itemCount: items.length, sampleItems: items.slice(0, 3), sessions: g.sessions || {},
-      captured: g.diag || [], affiliate: g.diagAffiliate || null,
+      captured: g.diag || [], captureLog: g.captureLog || null, affiliate: g.diagAffiliate || null,
     }, null, 1), 'application/json');
     setMsg('已下載診斷檔，把它傳給我。', 'ok');
   }
@@ -277,13 +333,21 @@
   $('btnFlash').addEventListener('click', () => captureFlash().catch((e) => { setMsg('❌ ' + e.message, 'err'); setBusy(false); }));
   $('btnSearch').addEventListener('click', captureSearch);
   $('btnAff').addEventListener('click', convertAffiliate);
-  $('btnStop').addEventListener('click', async () => { S.stopCapture = true; await chrome.storage.local.set({ stop: true }); setMsg('已要求停止（做完手上這個就會停）。', 'warn'); });
+  const requestStop = async () => { S.stopCapture = true; await chrome.storage.local.set({ stop: true }); setMsg('已要求停止（幾秒內會停）。', 'warn'); };
+  $('btnStop').addEventListener('click', requestStop);
+  $('btnStopFlash').addEventListener('click', requestStop);
+  $('btnLearn').addEventListener('click', async () => {
+    await chrome.windows.create({ url: SC.config.affiliateBase + SC.config.customLinkPath, type: 'normal', width: 1100, height: 850, focused: true });
+    setMsg('請在剛開的分潤後台視窗：貼一個蝦皮商品連結，按「取得連結」，看到短連結就好（不用關視窗）。回到這裡，「分潤後台做法」會變成「已學會 ✓」。', 'info');
+  });
   $('btnCsv').addEventListener('click', exportCsv);
   $('btnCopy').addEventListener('click', copyText);
   $('btnDiag').addEventListener('click', downloadDiag);
   $('btnClear').addEventListener('click', async () => {
     if (!confirm('確定清空所有已抓的商品與分潤連結嗎？')) return;
-    await chrome.storage.local.clear(); await load(); setMsg('已清空。', 'ok');
+    const keep = await chrome.storage.local.get('affTemplate');        // 學會的後台做法保留，不用重學
+    await chrome.storage.local.clear(); if (keep.affTemplate) await chrome.storage.local.set(keep);
+    await load(); setMsg('已清空（已學會的分潤後台做法會保留）。', 'ok');
   });
   $('tabFlash').addEventListener('click', () => { S.tab = 'flash'; syncTabs(); });
   $('tabOther').addEventListener('click', () => { S.tab = 'other'; syncTabs(); });
@@ -292,7 +356,7 @@
     const b = ev.target.closest('[data-copy]');
     if (b) { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = '已複製'; setTimeout(() => (b.textContent = '複製'), 1200); }
   });
-  for (const id of ['flashUrl', 'kw', 'pages', 'sort', 'minPctSearch']) {
+  for (const id of ['flashUrls', 'moreSessions', 'kw', 'pages', 'sort', 'minPctSearch']) {
     try { const v = localStorage.getItem('sc_' + id); if (v != null) $(id).value = v; } catch (e) { /* ignore */ }
     $(id).addEventListener('change', () => { try { localStorage.setItem('sc_' + id, $(id).value); } catch (e) { /* ignore */ } });
   }

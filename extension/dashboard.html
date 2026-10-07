@@ -44,10 +44,13 @@
   <div class="grid">
     <div class="card">
       <h3>① 抓「限時特賣」全部商品</h3>
-      <label>限時特賣網址（或場次 ID）
-        <input type="text" id="flashUrl" value="https://shopee.tw/flash_sale?promotionId=497096348680566"></label>
-      <label><input type="checkbox" id="allSessions" checked> 也抓其他場次（今天之後還沒結束的）</label>
-      <button id="btnFlash">開始抓取限時特賣</button>
+      <label>限時特賣網址（一行一個場次；也可以只貼場次 ID）
+        <textarea id="flashUrls" rows="3" style="width:100%;box-sizing:border-box;padding:8px;font:inherit;border:1px solid #bbb;border-radius:8px">https://shopee.tw/flash_sale?promotionId=497096348680566</textarea></label>
+      <label>（實驗性）自動再找幾個「後面的場次」（0 = 只抓上面貼的網址，建議先用 0）
+        <input type="number" id="moreSessions" value="0" min="0" max="10"></label>
+      <button id="btnFlash">開始抓取限時特賣</button> <button id="btnStopFlash" class="g">停止</button>
+      <div class="small">每個場次約 1~2 分鐘；最多 10 分鐘會自動停。同一個場次不會抓第二次；被蝦皮轉到首頁的場次會自動跳過。要抓別的場次，在蝦皮點那個場次，把網址複製貼到上面（一行一個）。</div>
+      <div id="capLog" class="small" style="margin-top:6px;white-space:pre-line"></div>
     </div>
     <div class="card">
       <h3>① 搜尋「其他特價商品」（不在限時特賣裡的）</h3>
@@ -68,6 +71,9 @@
       <h3>② 轉成分潤連結</h3>
       <div class="small">會用你登入的「蝦皮分潤後台」把下方<b>目前列表</b>的商品轉成分潤短連結。每個約 1~3 秒，轉不成功的會標示原因。</div>
       <p><button id="btnAff" class="ok">把目前列表轉成分潤連結</button> <button id="btnStop" class="g">停止</button></p>
+      <div id="affLearn" class="small"></div>
+      <p><button id="btnLearn" class="g">學習後台做法：我先手動轉 1 個</button></p>
+      <div class="small">想要<b>一次轉很多個</b>，請先按上面這顆，在跳出的分潤後台貼一個商品連結、按「取得連結」。小幫手會記下你的後台真正的做法，之後就能照樣一次送一大批（後台不收會自動減量）。只要做一次。</div>
     </div>
     <div class="card">
       <h3>③ 匯出</h3>

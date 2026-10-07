@@ -16,7 +16,14 @@
   async function handle(d) {
     let json;
     try { json = JSON.parse(d.body); } catch (e) { return; }
-    const source = SC.classify(d.url);
+    // 只收「限時特賣頁」和「搜尋頁」本身的資料。蝦皮首頁等其他頁面也有限時特賣小區塊，那些不收（否則會重複又混進雜訊）。
+    const path = location.pathname;
+    const onFlash = path.startsWith('/flash_sale');
+    const onSearch = path.startsWith('/search');
+    if (!onFlash && !onSearch) return;
+    if (onFlash && !/flash_sale/i.test(d.url)) return;
+    if (onSearch && !/search/i.test(d.url)) return;
+    const source = onFlash ? 'flash' : 'search';
     const promo = new URL(location.href).searchParams.get('promotionId') || '';
     const now = Date.now();
     const items = SC.extractItems(json, {
@@ -51,9 +58,13 @@
   async function autoscroll(opt) {
     const maxMs = opt.maxMs || 120000;
     const quietMs = opt.quietMs || 7000;
+    const expectPath = opt.expectPath || '';
     const t0 = Date.now();
     lastNewAt = Date.now();
+    let stopped = false;
     while (Date.now() - t0 < maxMs) {
+      if (expectPath && !location.pathname.startsWith(expectPath)) { return { ok: true, seen: seen.size, redirected: location.href }; }
+      if ((await chrome.storage.local.get('stop')).stop) { stopped = true; break; }
       window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.85)));
       await sleep(650);
       await queue;
@@ -63,7 +74,7 @@
     }
     await queue;
     window.scrollTo(0, 0);
-    return { ok: true, seen: seen.size, seconds: Math.round((Date.now() - t0) / 1000) };
+    return { ok: true, seen: seen.size, stopped, seconds: Math.round((Date.now() - t0) / 1000) };
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
