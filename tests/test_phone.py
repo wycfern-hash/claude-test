@@ -129,8 +129,8 @@ def setup_steps(tmp_path, monkeypatch, steps=None):
     monkeypatch.setattr(config, "PHONE_STEPS_PATH", f)
 
 
-def approved(conn, n=1, **kw):
-    pid = db.add_product(conn, f"https://shopee.tw/p-i.1.{n}", title=f"保溫杯{n}", source_url=f"https://s.shopee.tw/aff{n}")
+def approved(conn, n=1, aff=True, **kw):
+    pid = db.add_product(conn, f"https://shopee.tw/p-i.1.{n}", title=f"保溫杯{n}", source_url=f"https://s.shopee.tw/aff{n}" if aff else "")
     v = config.DATA_DIR / "videos" / str(pid)
     v.mkdir(parents=True, exist_ok=True)
     (v / "final.mp4").write_bytes(b"video")
@@ -339,3 +339,67 @@ def test_excel_keeps_original_link(tmp_path, monkeypatch):
         b = conn.execute("SELECT * FROM products WHERE shopee_key='7.8'").fetchone()
     assert a["source_url"] == "https://s.shopee.tw/abc" and a["url"].endswith("/product/5/6")   # 分潤短連結保留，標記商品要用
     assert b["source_url"] == ""                                                                  # 本來就是完整連結，不重複存
+
+
+# ---------------------------------------------------------------- 絕不用一般連結標記商品（要的是分潤連結）
+def test_plain_link_is_never_tagged_by_default(tmp_path, monkeypatch):
+    setup_steps(tmp_path, monkeypatch)
+    config.save_env({"UPLOAD_MODE": "phone_auto"})
+    d = device()
+
+    def no_phone():
+        raise AssertionError("沒有任何可上架的商品，不該去連手機")
+
+    with db.connect() as conn:
+        plain = approved(conn, 1, aff=False)
+        assert uploader.run(conn, connect_fn=no_phone) == 0
+        r = db.get(conn, plain)
+        assert r["status"] == "video_approved" and r["error"].startswith("no_aff:") and "沒有分潤連結" in r["error"]
+        aff = approved(conn, 2)                                        # 有分潤連結的照常上架，沒有的被略過
+        assert uploader.run(conn, connect_fn=lambda: d) == 1
+        assert db.get(conn, aff)["status"] == "uploaded" and db.get(conn, plain)["status"] == "video_approved"
+    assert d.typed[-1] == "https://s.shopee.tw/aff2" and len(d.pushed) == 1
+
+
+def test_plain_link_allowed_only_when_user_opts_in(tmp_path, monkeypatch):
+    setup_steps(tmp_path, monkeypatch)
+    config.save_env({"UPLOAD_MODE": "phone_auto", "ALLOW_PLAIN_LINK": "1"})
+    d = device()
+    with db.connect() as conn:
+        pid = approved(conn, 1, aff=False)
+        assert uploader.run(conn, connect_fn=lambda: d) == 1
+    assert d.typed[-1].endswith("i.1.1") and "shopee.tw" in d.typed[-1]
+
+
+def test_reimport_upgrades_missing_affiliate_link(tmp_path):
+    from shopee_clips import sourcing
+
+    f1, f2 = tmp_path / "a.csv", tmp_path / "b.csv"
+    f1.write_text("商品名稱,商品連結\n杯,https://shopee.tw/a-i.1.1\n", encoding="utf-8-sig")
+    f2.write_text("商品名稱,商品連結,分潤連結\n杯,https://shopee.tw/a-i.1.1,https://s.shopee.tw/AbC\n", encoding="utf-8-sig")
+    with db.connect() as conn:
+        r1 = sourcing.import_file(conn, str(f1))
+        assert r1["no_aff"] == 1
+        r2 = sourcing.import_file(conn, str(f2))
+        assert (r2["added"], r2["dup"], r2["upgraded"]) == (0, 1, 1)
+        assert db.get(conn, 1)["source_url"] == "https://s.shopee.tw/AbC"
+        r3 = sourcing.import_file(conn, str(f2))
+        assert r3["upgraded"] == 0                                      # 已經是分潤連結，不重複更新
+        f3 = tmp_path / "c.csv"
+        f3.write_text("商品名稱,商品連結,分潤連結\n杯,https://shopee.tw/a-i.1.1,https://s.shopee.tw/Other\n", encoding="utf-8-sig")
+        assert sourcing.import_file(conn, str(f3))["upgraded"] == 0
+        assert db.get(conn, 1)["source_url"] == "https://s.shopee.tw/AbC"  # 不會把已有的分潤連結換掉
+
+
+def test_package_and_ready_page_label_plain_links():
+    from shopee_clips import package
+    from shopee_clips.web import app
+
+    with db.connect() as conn:
+        plain, aff = approved(conn, 1, aff=False), approved(conn, 2)
+        rp, ra = db.get(conn, plain), db.get(conn, aff)
+    assert "沒有分潤" in (package.export_package(rp) / "文案.txt").read_text(encoding="utf-8")
+    assert "分潤連結：https://s.shopee.tw/aff2" in (package.export_package(ra) / "文案.txt").read_text(encoding="utf-8")
+    page = TestClient(app).get("/ready").text
+    assert "沒有分潤連結" in page and "發了不會有分潤" in page and ">分潤連結</a>" in page
+    assert "不允許（預設）" in TestClient(app).get("/settings").text

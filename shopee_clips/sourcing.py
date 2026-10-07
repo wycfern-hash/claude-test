@@ -46,7 +46,7 @@ ALIASES = {
     "p2": ["賣點2", "賣點二", "賣點 2", "selling point 2"],
     "p3": ["賣點3", "賣點三", "賣點 3", "selling point 3"],
 }
-SHORT_HOSTS = ("s.shopee.tw", "shp.ee", "shope.ee", "vn.shp.ee", "s.shopee.com")
+SHORT_HOSTS = db.AFF_HOSTS
 Cell = tuple  # (顯示文字, 超連結目標)；CSV 沒有超連結，目標為空字串
 
 
@@ -113,7 +113,7 @@ def _guess_url_col(rows: list[list[Cell]], hdr_i: int) -> int | None:
 def import_table(conn, rows: list[list[Cell]], label: str = "", progress=None) -> dict:
     """匯入一張表（Excel 工作表或 CSV）。自動辨識表頭；支援商品連結 / 分潤連結 / 商品ID+店鋪ID；
     也會用內容猜哪一欄是連結。回傳 {added, dup, failed:[(位置, 原因)]}。"""
-    res = {"added": 0, "dup": 0, "failed": [], "no_aff": 0}
+    res = {"added": 0, "dup": 0, "failed": [], "no_aff": 0, "upgraded": 0}
     rows = [r for r in rows if any(str(c[0] or "").strip() or c[1] for c in r)]
     where = f"{label} " if label else ""
     hdr_i, cols = None, {}
@@ -166,6 +166,11 @@ def import_table(conn, rows: list[list[Cell]], label: str = "", progress=None) -
             continue
         if pid is None:
             res["dup"] += 1
+            key = db.shopee_key(url)
+            old = conn.execute("SELECT id, source_url FROM products WHERE shopee_key=?", (key,)).fetchone() if key else None
+            if old and db.is_affiliate(original) and not db.is_affiliate(old["source_url"]):
+                db.update(conn, old["id"], source_url=original)  # 之前沒有分潤連結，這次檔案有 → 補上
+                res["upgraded"] += 1
             continue
         res["added"] += 1
         if not any(h in original for h in SHORT_HOSTS):  # 不是分潤短連結：上架標記商品時不會有分潤
@@ -185,6 +190,7 @@ def _merge(total: dict, part: dict) -> dict:
     total["dup"] += part["dup"]
     total["failed"] += part["failed"]
     total["no_aff"] = total.get("no_aff", 0) + part.get("no_aff", 0)
+    total["upgraded"] = total.get("upgraded", 0) + part.get("upgraded", 0)
     return total
 
 
@@ -224,7 +230,7 @@ def import_excel(conn, path: str, progress=None) -> dict:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, data_only=True)
-    res = {"added": 0, "dup": 0, "failed": [], "no_aff": 0}
+    res = {"added": 0, "dup": 0, "failed": [], "no_aff": 0, "upgraded": 0}
     for ws in wb.worksheets:
         rows = [[(c.value if c.value is not None else "", c.hyperlink.target if c.hyperlink and c.hyperlink.target else "")
                  for c in r] for r in ws.iter_rows()]
@@ -240,8 +246,8 @@ def import_file(conn, path: str, progress=None) -> dict:
     if ext in (".csv", ".tsv", ".txt"):
         return import_csv(conn, path, progress)
     if ext == ".xls":
-        return {"added": 0, "dup": 0, "no_aff": 0, "failed": [(Path(path).name, "不支援舊版 .xls，請用 Excel 另存成 .xlsx 或 .csv")]}
-    return {"added": 0, "dup": 0, "no_aff": 0, "failed": [(Path(path).name, f"不認得的檔案類型 {ext or '(無副檔名)'}，請用 .csv 或 .xlsx")]}
+        return {"added": 0, "dup": 0, "no_aff": 0, "upgraded": 0, "failed": [(Path(path).name, "不支援舊版 .xls，請用 Excel 另存成 .xlsx 或 .csv")]}
+    return {"added": 0, "dup": 0, "no_aff": 0, "upgraded": 0, "failed": [(Path(path).name, f"不認得的檔案類型 {ext or '(無副檔名)'}，請用 .csv 或 .xlsx")]}
 
 
 def login() -> None:

@@ -14,6 +14,11 @@ def export_package(row) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     if not (d / "video.mp4").exists():
         shutil.copy(config.DATA_DIR / row["video_path"], d / "video.mp4")
-    link = row["source_url"] or row["url"]
-    (d / "文案.txt").write_text(f"{row['video_title']}\n\n{row['video_caption']}\n\n商品：{link}\n", encoding="utf-8")
+    from . import db
+
+    if db.is_affiliate(row["source_url"]):
+        link_line = f"分潤連結：{row['source_url']}"
+    else:
+        link_line = f"商品連結（一般連結，沒有分潤）：{row['url']}"
+    (d / "文案.txt").write_text(f"{row['video_title']}\n\n{row['video_caption']}\n\n{link_line}\n", encoding="utf-8")
     return d

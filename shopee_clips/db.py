@@ -96,6 +96,14 @@ _KEY_RES = (
 )
 
 
+AFF_HOSTS = ("s.shopee.tw", "shp.ee", "shope.ee", "vn.shp.ee", "s.shopee.com")
+
+
+def is_affiliate(url: str) -> bool:
+    """分潤短連結（由分潤後台產生）才算分潤連結；一般商品網址不算。"""
+    return bool(url) and any(h in url for h in AFF_HOSTS)
+
+
 def shopee_key(url: str) -> str | None:
     """從商品網址取出 shop_id.item_id；解析不到回傳 None（短連結需先展開）。"""
     for rx in _KEY_RES:

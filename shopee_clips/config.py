@@ -61,6 +61,7 @@ SPEC = [
     ("APP_PASSWORD", "", str),             # 設了之後網頁要帳密(任意帳號名)才能進，手機/區網使用建議設
     ("AFFILIATE_PICKS_URL", "", str),
     # Android 手機自動上架（蝦皮短影音只有手機版）
+    ("ALLOW_PLAIN_LINK", False, bool),    # 允許沒有分潤連結的商品用一般連結上架（預設不允許）
     ("PHONE_SERIAL", "", str),             # 接了多支手機時指定序號；空白=唯一那支
     ("PHONE_PACKAGE", "com.shopee.tw", str),
     # 雲端（S3 相容：AWS S3 / Cloudflare R2 / Backblaze B2 / MinIO）：影片上傳後產生下載連結，手機任何網路都能下載

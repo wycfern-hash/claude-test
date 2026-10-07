@@ -271,12 +271,14 @@ def import_status():
     if not r:
         return back("/")
     fails = "".join(f"<tr><td>{e(str(w))}</td><td>{e(why)}</td></tr>" for w, why in r["failed"][:30])
-    ok = r["added"] > 0
+    ok = r["added"] > 0 or bool(r.get("upgraded"))
     dup_txt = "，重複略過 %d 個" % r["dup"] if r["dup"] else ""
+    if r.get("upgraded"):
+        dup_txt += f"，其中 <b>{r['upgraded']}</b> 個已補上分潤連結"
     aff_warn = (f'<div class="flash warn">⚠ 其中 <b>{r.get("no_aff", 0)}</b> 個商品沒有分潤連結（檔案裡沒有「分潤連結」欄，或不是 s.shopee.tw 短連結）。'
                 f'上架時標記商品會用一般連結，<b>不會有分潤</b>。請先用「蝦皮特賣分潤小幫手」擴充功能轉成分潤連結，或在分潤後台產生連結後再匯入。</div>'
                 if ok and r.get("no_aff") else "")
-    head = (f'<div class="flash ok">✅ 匯入完成：新增 <b>{r["added"]}</b> 個商品{dup_txt}。</div>{aff_warn}' if ok else
+    head = (f'<div class="flash ok">✅ 匯入完成：新增 <b>{r["added"]}</b> 個商品{dup_txt}。</div>{aff_warn}' if (ok or r.get("upgraded")) else
             '<div class="flash err">❌ 沒有匯入任何商品。看下面的原因。</div>')
     nxt = ('<p>下一步：</p><p><a class="btn ok big" href="/">回到首頁，按「開始自動處理」→</a></p>'
            '<p><a class="btn g" href="/list">先看管理列表</a> <a class="btn g" href="/todo">待產圖</a></p>' if ok else
@@ -575,13 +577,14 @@ OTHER_OPTIONS = {
     "AUTO_ENRICH": [("0", "關（預設）"), ("1", "開（背景自動開 Chrome 去蝦皮商品頁補標題/圖片）")],
     "AI_LABEL": [("1", "開（影片左上角顯示「AI 生成」）"), ("0", "關")],
     "VIDEO_MODE": [("slideshow", "A. 圖片合成 15 秒（免費、不用 API）"), ("ai", "B. AI 生成影片（用新圖+腳本，花錢/點數）")],
+    "ALLOW_PLAIN_LINK": [("0", "不允許（預設）：沒有分潤連結的商品不會自動上架"), ("1", "允許用一般連結（發了不會有分潤）")],
     "UPLOAD_MODE": [("manual", "只匯出上架包（我在手機自己傳）"), ("phone_dryrun", "Android 手機自動操作，但不按發佈（先測這個）"),
                     ("phone_auto", "Android 手機自動操作並發佈")],
     "TTS": [("1", "開（曉臻）"), ("0", "關")],
     "SUBTITLES": [("1", "開（只含賣點內容文字）"), ("0", "關")],
 }
 LABELS = {
-    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型（每個商品可在審圖頁單獨改）", "DEFAULT_IMAGE_SOURCE": "預設圖片來源（每個商品可單獨改）", "AUTO_ENRICH": "自動補商品資料", "AI_LABEL": "「AI 生成」標示",
+    "IMAGES_PER_PRODUCT": "每商品幾張圖", "VIDEO_MODE": "預設影片類型（每個商品可在審圖頁單獨改）", "DEFAULT_IMAGE_SOURCE": "預設圖片來源（每個商品可單獨改）", "AUTO_ENRICH": "自動補商品資料", "ALLOW_PLAIN_LINK": "沒有分潤連結時", "AI_LABEL": "「AI 生成」標示",
     "VIDEO_CLIP_SECONDS": "AI 影片單段秒數（0=依服務預設）", "FAL_EXTRA_ARGS": "fal 額外參數 JSON（選填）",
     "OPENAI_BASE_URL": "OpenAI Base URL（用相容 OpenAI 的服務才填）", "TTS": "配音", "TTS_VOICE": "配音聲音", "SUBTITLES": "字幕",
     "DAILY_GEN_CAP": "每日最多用 AI 產幾支影片（花錢/點數上限）", "DAILY_UPLOAD_CAP": "每日最多上架幾支", "UPLOAD_MODE": "上架方式",
@@ -663,7 +666,7 @@ def settings(saved: int = 0):
             + _card("Android 手機自動上架（用 USB 偵錯操作蝦皮 App）", ["PHONE_SERIAL", "PHONE_PACKAGE"])
             + _card("雲端上傳（選填，S3 相容）", ["CLOUD_ENDPOINT", "CLOUD_BUCKET", "CLOUD_ACCESS_KEY", "CLOUD_SECRET_KEY", "CLOUD_PUBLIC_BASE"])
             + '<details class=card><summary><b>進階</b></summary>'
-            + "".join(_field(n) for n in ["AUTO_ENRICH", "IMAGES_PER_PRODUCT", "OPENAI_BASE_URL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS", "FLOW_CLIPS_PER_PRODUCT"])
+            + "".join(_field(n) for n in ["AUTO_ENRICH", "ALLOW_PLAIN_LINK", "IMAGES_PER_PRODUCT", "OPENAI_BASE_URL", "VIDEO_CLIP_SECONDS", "FAL_EXTRA_ARGS", "FLOW_CLIPS_PER_PRODUCT"])
             + "</details>")
     return page(f"""<h2>設定</h2>{note}<style>label{{display:block;margin:8px 0}}select,input[type=text],input[type=password]{{width:100%;box-sizing:border-box;padding:8px;font:inherit}}</style>
 <form method=post action=/settings>{body}<button>儲存設定</button></form>{_settings_js()}
@@ -1033,6 +1036,12 @@ def videos_act(pid: int, act: str = Form(...), video_title: str = Form(""), vide
     return back("/videos")
 
 
+def aff_link_html(r) -> str:
+    if db.is_affiliate(r["source_url"]):
+        return f'<a href="{e(r["source_url"])}" target=_blank>分潤連結</a>'
+    return (f'<span class="err">⚠ 沒有分潤連結</span> <a href="{e(r["url"])}" target=_blank>一般商品連結（發了不會有分潤）</a>')
+
+
 def cloud_html(r) -> str:
     """雲端下載連結 + QR（手機掃一下就能下載影片，不必在同一個 Wi-Fi）。"""
     if not r["cloud_url"]:
@@ -1054,7 +1063,7 @@ def ready():
 <a href="/media/{e(r["video_path"])}" download>下載影片</a>
 <textarea id=t{r["id"]} rows=4 readonly>{text}</textarea>
 <button type=button onclick="navigator.clipboard.writeText(document.getElementById('t{r["id"]}').value)">複製標題+文案</button>
-<a href="{e(r["source_url"] or r["url"])}" target=_blank>商品連結</a>
+{aff_link_html(r)}
 {cloud_html(r)}
 <form method=post action=/ready/{r["id"]}><button class=g>我已手動上傳</button></form></div>"""
     return page(f"<h2>上架包（{len(rows)}）</h2>{cards or '沒有待上架'}")

@@ -17,6 +17,10 @@ PHONE_HELP = ("請用 USB 接上手機、解鎖螢幕、開啟「開發人員選
               "小米/紅米等機型模擬點擊另需開啟「USB 偵錯（安全設定）」。")
 
 
+NO_AFF_MSG = ("no_aff: 沒有分潤連結，已略過（不會用一般連結上架）。請用「蝦皮特賣分潤小幫手」轉成分潤連結，"
+              "再把 CSV 重新匯入（會自動補上）。")
+
+
 class PhoneError(RuntimeError):
     pass
 
@@ -159,6 +163,12 @@ def push_video(d, local: Path, name: str) -> str:
 
 def run(conn, mode: str, connect_fn=None, say=lambda m: None) -> int:
     rows = [r for r in db.by_status(conn, "video_approved") if r["video_path"]]
+    if not config.ALLOW_PLAIN_LINK:  # 沒有分潤連結的商品不上架（標記一般連結不會有分潤）
+        for r in [r for r in rows if not db.is_affiliate(r["source_url"])]:
+            if not r["error"].startswith("no_aff:"):
+                db.update(conn, r["id"], error=NO_AFF_MSG)
+                conn.commit()
+        rows = [r for r in rows if db.is_affiliate(r["source_url"])]
     if not rows:
         return 0
     publish = mode == "phone_auto"
