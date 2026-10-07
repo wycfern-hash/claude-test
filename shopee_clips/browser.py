@@ -72,8 +72,15 @@ def open_context():
             b.close()
 
 
-def open_login_tabs() -> None:
-    """開自動化 Chrome 並打開 Google / Flow / 蝦皮 / Threads / Facebook 分頁，讓你手動登入。"""
+LOGIN_URLS = ("https://gemini.google.com", "https://labs.google/fx/tools/flow", "https://shopee.tw")
+
+
+def open_login_tabs(urls=None) -> None:
+    """開自動化 Chrome 並只打開指定的網址（預設 Google / Flow / 蝦皮），讓你手動登入。已經開著的網址不會重複開。"""
     with open_context() as ctx:
-        for url in ("https://gemini.google.com", "https://labs.google/fx/tools/flow", "https://shopee.tw", "https://www.threads.com", "https://www.facebook.com"):
+        have = [p.url for p in ctx.pages]
+        for url in urls or LOGIN_URLS:
+            host = url.split("/")[2]
+            if any(host in u for u in have):
+                continue
             ctx.new_page().goto(url)

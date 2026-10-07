@@ -326,3 +326,26 @@ def test_find_topics_then_reply_one_by_one_without_links(chrome, mock_site):
         social.send_lead(conn, z["id"], "我也在找，推薦先看容量跟保溫時間～", ctx=ctx)
         assert social.leads(conn, "sent")[0]["author"] == "zoe"
     assert getlog()["replies"][-1]["text"].startswith("我也在找")
+
+
+@pytest.mark.skipif(CHROME is None, reason="no chromium")
+def test_login_tabs_open_only_what_is_asked_and_not_twice(monkeypatch, mock_site):
+    base, _ = mock_site
+    monkeypatch.setattr(config, "CHROME_PATH", str(CHROME))
+    monkeypatch.setattr(config, "CHROME_HEADLESS", True)
+    monkeypatch.setattr(config, "CDP_PORT", 9336)
+    try:
+        browser.open_login_tabs([base + "/threads", base + "/fb"])
+        browser.open_login_tabs([base + "/threads", base + "/fb"])       # 已經開著，不會再開
+        with browser.open_context() as ctx:
+            urls = [p.url for p in ctx.pages]
+        assert sum(u.startswith(base) for u in urls) == 2, urls           # 要開的 2 個各開 1 次；第二次呼叫沒有再多開
+        assert not any(h in u for u in urls for h in ("google", "shopee", "flow"))
+    finally:
+        import subprocess
+        subprocess.run(["pkill", "-f", "remote-debugging-port=933[6]"])
+
+
+def test_default_login_tabs_no_longer_include_social_sites():
+    assert not any("threads" in u or "facebook" in u for u in browser.LOGIN_URLS)
+    assert "shopee.tw" in browser.LOGIN_URLS[-1]

@@ -1087,7 +1087,7 @@ def social_page():
 <p>自動發文：<b>{'🟢 開啟' if on else '⚪ 關閉'}</b>（每天最多 {config.SOCIAL_DAILY_CAP} 則，間隔至少 {config.SOCIAL_MIN_GAP_MIN} 分鐘；今天已發 {today} 則）
 {('<br><small>下一則最早時間（UTC）：' + e(na.strftime("%m/%d %H:%M")) + '</small>') if na else ''}</p>
 <form method=post action=/social/auto style="display:inline"><input type=hidden name=on value="{0 if on else 1}"><button class="{'g' if on else 'ok'}">{'停止自動發文' if on else '開始自動發文'}</button></form>
-<form method=post action=/login style="display:inline"><button class=g>開啟自動化 Chrome（先在裡面登入 Threads、Facebook）</button></form>
+<form method=post action=/social/login style="display:inline"><button class=g>開啟 Chrome 登入 Threads／Facebook（只開這兩個）</button></form>
 <a class="btn g" href="/settings">調整上限／粉絲專頁網址</a>
 <p><small>第一次請先用佇列裡的「預覽（不發佈）」確認畫面對了，再按「發佈」。我沒看過你的實際畫面，按鈕文字可能要依診斷檔微調（config/social_sites.json）。
 每個商品在每個平台只發一次；沒有分潤連結的商品不會被排進來。</small></p></div>"""
@@ -1152,6 +1152,14 @@ def social_page():
 <form method=post action=/social/find class=row><label style="flex:3">關鍵字<input type=text name=keyword placeholder="例如：保溫杯推薦"></label><button>搜尋</button></form>
 {lt or '<p><small>還沒有搜尋結果</small></p>'}</div>"""
     return page(f"<h2>發文</h2>{top}{queue_card}{q_card}{r_card}{l_card}")
+
+
+@app.post("/social/login")
+def social_login():
+    """只開 Threads 與 Facebook（有填粉絲專頁網址就開那個）；不會開 Gemini、Flow、蝦皮。"""
+    urls = ["https://www.threads.com/", config.SOCIAL_FB_PAGE_URL or "https://www.facebook.com/"]
+    _bg("開啟 Chrome", lambda conn: (browser.open_login_tabs(urls), "已開啟 Threads 與 Facebook，請在裡面登入")[1])
+    return back("/social")
 
 
 @app.post("/social/auto")
