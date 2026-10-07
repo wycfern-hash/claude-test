@@ -110,9 +110,12 @@
     </div>
     <datalist id="pModels"></datalist>
     <label style="display:block;margin-top:8px">貼文最後的揭露文字（建議保留；清空就不加）<input type="text" id="pDisc" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #bbb;border-radius:8px"></label>
-    <div class="row" style="margin-top:8px">
-      <label style="flex:3">Facebook 粉絲專頁網址（要發 Facebook 才需要）<input type="text" id="pFb" placeholder="https://www.facebook.com/你的粉絲專頁"></label>
-      <label><input type="checkbox" id="pPreview" checked> 發文時只幫我貼好，<b>我自己按發佈</b>（第一次請先這樣）</label>
+    <div style="border:2px solid #ee4d2d;border-radius:10px;padding:10px;margin-top:10px">
+      <b>發文設定</b>（生成文案後，每個商品底下會有「發到 Threads」「發到 Facebook 粉絲專頁」兩顆按鈕）
+      <div class="row" style="margin-top:6px">
+        <label style="flex:3">Facebook 粉絲專頁網址（要發 Facebook 就要先填這個）<input type="text" id="pFb" placeholder="https://www.facebook.com/你的粉絲專頁"></label>
+        <label><input type="checkbox" id="pPreview" checked> 只幫我貼好，<b>我自己按發佈</b>（第一次請先這樣）</label>
+      </div>
     </div>
     <p><button id="btnSelAll" class="g">全選目前列表</button> <button id="btnSelNone" class="g">全不選</button>
       <b id="selCount" style="margin:0 8px">已勾選 0 個</b>
@@ -125,7 +128,12 @@
   <div class="card" id="leadCard">
     <h3>⑤ Threads 搜尋後回覆</h3>
     <div class="small">輸入關鍵字，列出 Threads 上相關的貼文。<b>每一篇都要你按「回覆這一篇」才會送出</b>，回覆<b>不能放連結</b>，每天最多 20 篇（今天已回 <b id="replyCount">0</b> 篇）。上面「④」有選 AI 的話會幫你預寫草稿，沒選就自己寫。用的是你在這個 Chrome 已登入的 Threads。</div>
-    <div class="row" style="margin-top:8px"><label style="flex:3">關鍵字<input type="text" id="leadKw" placeholder="例如：保溫杯推薦"></label><button id="btnLeadSearch">搜尋 Threads</button></div>
+    <div class="row" style="margin-top:8px">
+      <label>搭配商品（選了會自動填關鍵字，AI 草稿也會知道在聊什麼）<select id="leadProd"><option value="">不指定</option></select></label>
+      <label style="flex:3">關鍵字<input type="text" id="leadKw" placeholder="例如：保溫杯推薦"></label>
+      <label>只看幾天內的貼文<select id="leadDays"><option value="1">1 天內</option><option value="3">3 天內</option><option value="7" selected>7 天內（一週）</option><option value="14">14 天內</option></select></label>
+      <button id="btnLeadSearch">搜尋 Threads</button>
+    </div>
     <div id="leadOut"></div>
   </div>
 

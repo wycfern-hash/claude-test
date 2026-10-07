@@ -120,10 +120,12 @@
       const text = [...e.querySelectorAll(L.text)].map((x) => x.innerText.trim()).filter(Boolean).join(' ');
       if (!a || !text || seen.has(a.href)) continue;
       seen.add(a.href);
-      out.push({ url: a.href, author: ((e.querySelector(L.author) || {}).innerText || '').trim(), text });
+      const t = e.querySelector(L.time);
+      const at = t ? Date.parse(t.getAttribute('datetime')) : NaN;
+      out.push({ url: a.href, author: ((e.querySelector(L.author) || {}).innerText || '').trim(), text, at: Number.isFinite(at) ? at : null });
     }
     if (!out.length) throw fail('搜尋', '沒有讀到任何貼文（可能沒登入，或畫面格式不同）');
-    return { ok: true, results: out.slice(0, 20) };
+    return { ok: true, results: out.slice(0, 40) };
   }
 
   async function reply(m) {

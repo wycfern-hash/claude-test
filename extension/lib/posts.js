@@ -188,14 +188,15 @@ JSON 格式：{"posts":[{"style":"story","text":"...","comment":"..."},{"style":
   }
 
   // Threads「搜尋後回覆」的草稿：有回應到對方內容的短回覆，不放連結、不推銷。失敗或沒選 AI 回傳空字串（自己寫）
-  function buildReplyPrompt(text, keyword) {
+  function buildReplyPrompt(text, keyword, topic) {
     return '你是台灣 Threads 的一般使用者，要回覆下面這篇貼文。請寫一則自然、友善、有點幽默、有回應到貼文內容的繁體中文口語回覆（50 字內）。'
       + '規定：不要放任何網址或商品連結、不要推銷或提到購買、不要編造個人經驗細節；沒有話可說就回空字串。\n'
+      + (topic ? `我平常會聊的話題（只是讓你抓方向，回覆不要提到購買、不要推銷）：${topic}\n` : '')
       + `搜尋關鍵字：${keyword}\n貼文：${String(text).slice(0, 300)}\n輸出 JSON：{"reply":"..."}`;
   }
-  async function draftReply(cfg, text, keyword, fetchImpl) {
+  async function draftReply(cfg, text, keyword, fetchImpl, topic) {
     if (!cfg || !cfg.provider) return '';
-    try { const s = await callAI(cfg, buildReplyPrompt(text, keyword), fetchImpl); return String(s.reply || '').trim(); } catch (e) { return ''; }
+    try { const s = await callAI(cfg, buildReplyPrompt(text, keyword, topic), fetchImpl); return String(s.reply || '').trim(); } catch (e) { return ''; }
   }
 
   const PLACEHOLDER = '【這個商品還沒有分潤連結，請先轉成分潤連結】';

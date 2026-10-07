@@ -353,3 +353,20 @@ test('回覆草稿：沒選 AI 回傳空字串；有選就用 AI，且提示詞�
   assert.equal(r, '我也是選好久😂');
   assert.equal(await PO.draftReply({ provider: 'openai', model: 'm', key: 'k' }, 'x', 'y', async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'bad' } }) })), '');
 });
+
+test('只留幾天內的貼文：新的留下、太舊的略過、讀不到日期的另外計', () => {
+  const now = Date.parse('2026-10-07T12:00:00Z'), day = 86400e3;
+  const list = [{ url: 'a', at: now - 2 * day }, { url: 'b', at: now - 7 * day + 1000 }, { url: 'c', at: now - 8 * day }, { url: 'd', at: null }];
+  const r = SO.filterRecent(list, 7, now);
+  assert.deepEqual(r.kept.map((x) => x.url), ['a', 'b']);
+  assert.deepEqual(r.old.map((x) => x.url), ['c']);
+  assert.deepEqual(r.unknown.map((x) => x.url), ['d']);
+  assert.equal(SO.filterRecent(list, 14, now).kept.length, 3);
+  assert.equal(SO.ageText(now - 2 * day, now), '2 天前'); assert.equal(SO.ageText(now - 3 * 3600e3, now), '3 小時前');
+  assert.equal(SO.ageText(null, now), '日期不明');
+});
+test('回覆草稿提示詞：有指定商品話題時帶入，但仍禁止購買與推銷', () => {
+  const p = PO.buildReplyPrompt('好難選', '保溫杯', '保溫杯');
+  assert.match(p, /我平常會聊的話題/); assert.match(p, /不要提到購買/);
+  assert.doesNotMatch(PO.buildReplyPrompt('好難選', '保溫杯'), /我平常會聊的話題/);
+});

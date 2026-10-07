@@ -14,7 +14,7 @@
       reply: '回覆|Reply',
       replySend: '^回覆$|^Reply$|^發佈$|^Post$',
       // 搜尋結果頁每篇貼文的 CSS
-      item: "div[data-pressable-container='true']", link: "a[href*='/post/']", author: "a[href^='/@']", text: "span[dir='auto']",
+      item: "div[data-pressable-container='true']", link: "a[href*='/post/']", author: "a[href^='/@']", text: "span[dir='auto']", time: 'time[datetime]',
     },
     facebook: {
       loginMarkers: '登入|Log in|建立新帳號|Create new account',
@@ -34,5 +34,19 @@
   }
   const dayKey = (ms) => new Date(ms + 8 * 3600e3).toISOString().slice(0, 10);   // 台北日期
   const repliedToday = (log, nowMs) => (log || []).filter((t) => dayKey(t) === dayKey(nowMs)).length;
-  return { LABELS, REPLY_DAILY_CAP, checkReply, repliedToday, URL_RE };
+  // 只留「幾天內」的貼文（at = 貼文時間 ms；讀不到時間的另外計數，不默默丟掉）
+  function filterRecent(list, days, nowMs) {
+    const cut = nowMs - days * 86400e3;
+    const kept = [], old = [], unknown = [];
+    for (const x of list) (x.at ? (x.at >= cut ? kept : old) : unknown).push(x);
+    return { kept, old, unknown };
+  }
+  function ageText(at, nowMs) {
+    if (!at) return '日期不明';
+    const d = (nowMs - at) / 86400e3;
+    if (d < 1 / 24) return '剛剛';
+    if (d < 1) return Math.floor(d * 24) + ' 小時前';
+    return Math.floor(d) + ' 天前';
+  }
+  return { LABELS, REPLY_DAILY_CAP, checkReply, repliedToday, filterRecent, ageText, URL_RE };
 });

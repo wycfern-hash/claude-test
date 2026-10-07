@@ -21,7 +21,7 @@
     S.removed = g.lastRemoved || null;
     S.items = g.items || {}; S.sessions = g.sessions || {}; S.aff = g.aff || {}; S.diag = g.diag || []; S.progress = g.progress || null;
     render();
-    renderPostCfg(); renderPosts(); renderLeads();
+    renderPostCfg(); renderPosts(); renderLeadProd(); renderLeads();
   }
   let renderTimer = null;
   chrome.storage.onChanged.addListener((ch, area) => {
@@ -492,7 +492,7 @@
           ${S.posted[k + ':threads'] ? '<span class="good small">✔ 已發過 Threads</span>' : ''} ${S.posted[k + ':facebook'] ? '<span class="good small">✔ 已發過 Facebook</span>' : ''}
           <div class="small">文字在上面，分潤連結放在第一則留言。</div></div></details>`).join('')
         + (d.threads ? `<details><summary>Threads 短文</summary>${copyBox(`po${n}_t`, 'Threads', d.threads + (SC.linkOf(r) ? '\n' + SC.linkOf(r) : ''), 3)}</details>` : '');
-      return `<details class="card" style="margin:8px 0"><summary><b>${esc(r.name.slice(0, 40))}</b> <span class="small">${d.by === 'template' ? '範本' : 'AI'}</span></summary>${warn}${note}${inner}</details>`;
+      return `<details class="card" style="margin:8px 0" ${n < 3 ? 'open' : ''}><summary><b>${esc(r.name.slice(0, 40))}</b> <span class="small">${d.by === 'template' ? '範本' : 'AI'}</span></summary>${warn}${note}${inner}</details>`;
     }).join('');
     $('postOut').innerHTML = html;
   }
@@ -518,7 +518,7 @@
     try {
       await Promise.all(Array.from({ length: cfg.provider ? 3 : 1 }, worker));
       await chrome.storage.local.set({ postsStore: S.posts });
-      renderPosts();
+      renderPosts(); renderLeadProd();
       $('postMsg').textContent = '';
       setMsg(`已產生 ${done} 個商品的文案。` + (noAff ? `其中 ${noAff} 個還沒有分潤連結（文案裡會放提示，請先轉換）。` : '') + (aiFail ? `AI 失敗 ${aiFail} 個，已改用範本。第一個錯誤請看該商品下方的提示。` : ''), noAff || aiFail ? 'warn' : 'ok');
     } finally { $('btnPosts').disabled = false; }
@@ -590,10 +590,17 @@
     finally { $('postOut').querySelectorAll('[data-post]').forEach((b) => { b.disabled = false; }); }
   }
 
+  function renderLeadProd() {
+    const sel = $('leadProd'), cur = sel.value;
+    const rows = viewRows().filter((r) => S.posts[r.key]);
+    sel.innerHTML = '<option value="">不指定</option>' + rows.map((r) => `<option value="${esc(r.key)}">${esc(r.name.replace(/[【\[].*?[】\]]/g, '').trim().slice(0, 24))}</option>`).join('');
+    sel.value = rows.some((r) => r.key === cur) ? cur : '';
+  }
   function renderLeads() {
     $('replyCount').textContent = SC.repliedToday(S.replyLog, Date.now());
-    const list = S.leads.map((l, i) => ({ l, i })).filter(({ l }) => l.status !== 'sent' && l.status !== 'skipped');
-    $('leadOut').innerHTML = list.map(({ l, i }) => `<div class="card" style="margin:6px 0"><div class="small">@${esc(l.author)}｜<a href="${esc(l.url)}" target="_blank">看原文</a>｜關鍵字：${esc(l.keyword)}</div>
+    const days = +$('leadDays').value || 7, now = Date.now();
+    const list = S.leads.map((l, i) => ({ l, i })).filter(({ l }) => l.status !== 'sent' && l.status !== 'skipped' && (!l.at || now - l.at <= days * 86400e3));
+    $('leadOut').innerHTML = list.map(({ l, i }) => `<div class="card" style="margin:6px 0"><div class="small">@${esc(l.author)}｜${esc(SC.ageText(l.at, now))}｜<a href="${esc(l.url)}" target="_blank">看原文</a>｜關鍵字：${esc(l.keyword)}</div>
       <div>「${esc(l.text.slice(0, 200))}」</div>
       <textarea id="lead${i}" rows="2" placeholder="寫一則回覆（不能放連結）" style="width:100%;box-sizing:border-box;padding:8px;font:inherit;border:1px solid #bbb;border-radius:8px">${esc(l.draft || '')}</textarea>
       ${l.error ? `<div class="bad small">${esc(l.error)}</div>` : ''}
@@ -611,16 +618,22 @@
       const { w, r } = await socialRun(SC.config.threadsSearch.replace('{q}', encodeURIComponent(kw)), { cmd: 'social:search' });
       if (!r.ok) { setMsg(`❌ 卡在「${r.stage || '開啟頁面'}」：${r.error}。把「下載診斷檔」傳給我，我就能修。`, 'err'); return; }
       closeWin(w.winId);
+      const days = +$('leadDays').value || 7;
+      const { kept, old, unknown } = SC.filterRecent(r.results, days, Date.now());
+      const unfiltered = kept.length === 0 && unknown.length === r.results.length;   // 整頁都讀不到日期：照樣列出，但提醒沒有篩選
+      const use = unfiltered ? unknown : kept;
       const have = new Set(S.leads.map((l) => l.url));
       const cfg = { provider: S.pcfg.provider, model: S.pcfg.model, key: S.pcfg.key };
+      const topic = $('leadProd').value ? ($('leadProd').selectedOptions[0].textContent || '') : '';
       let added = 0;
-      for (const f of r.results) {
+      for (const f of use) {
         if (have.has(f.url)) continue;
-        S.leads.unshift({ ...f, keyword: kw, status: 'new', draft: await SC.draftReply(cfg.provider ? cfg : null, f.text, kw), at: Date.now() });
+        S.leads.unshift({ ...f, keyword: kw, status: 'new', draft: await SC.draftReply(cfg.provider ? cfg : null, f.text, kw, undefined, topic), addedAt: Date.now() });
         added++;
       }
       await saveLeads(); renderLeads();
-      setMsg(`找到 ${r.results.length} 篇，新增 ${added} 篇。每一篇都要你按「回覆這一篇」才會送出。`, 'ok');
+      setMsg(unfiltered ? `⚠ 讀不到貼文日期（Threads 畫面格式可能不同），所以沒辦法只留 ${days} 天內的；先列出 ${added} 篇，請自己看「看原文」的日期。把「下載診斷檔」傳給我就能修。`
+        : `找到 ${r.results.length} 篇，${days} 天內的 ${kept.length} 篇（太舊的 ${old.length} 篇、讀不到日期的 ${unknown.length} 篇已略過），新增 ${added} 篇。每一篇都要你按「回覆這一篇」才會送出。`, unfiltered || added === 0 ? 'warn' : 'ok');
     } catch (e) { setMsg('❌ ' + e.message, 'err'); }
     finally { $('btnLeadSearch').disabled = false; }
   }
@@ -685,6 +698,8 @@
   });
   $('btnPosts').addEventListener('click', () => generatePosts().catch((e) => { setMsg('❌ ' + e.message, 'err'); $('btnPosts').disabled = false; }));
   $('btnLeadSearch').addEventListener('click', searchLeads);
+  $('leadProd').addEventListener('change', () => { const o = $('leadProd').selectedOptions[0]; if ($('leadProd').value) $('leadKw').value = o.textContent; });
+  $('leadDays').addEventListener('change', renderLeads);
   $('leadOut').addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-lead]'), k = ev.target.closest('[data-skip]');
     if (b) replyLead(+b.dataset.lead);

@@ -42,9 +42,14 @@ SOC_POST = """<!doctype html><meta charset=utf-8><body>
 function rep(){ box.innerHTML='<div role=textbox contenteditable=true id=tb></div><button onclick="send()">回覆</button>'; }
 async function send(){ await fetch('/__reply',{method:'POST',body:JSON.stringify({url:location.pathname,text:document.getElementById('tb').innerText})}); box.innerHTML='ok'; }
 </script>"""
-SOC_SEARCH = """<!doctype html><meta charset=utf-8><body>
-<div data-pressable-container="true"><a href="/@zoe">zoe</a><a href="/social/post/11">t</a><span dir="auto">最近想買保溫杯，有推薦的嗎</span></div>
-<div data-pressable-container="true"><a href="/@max">max</a><a href="/social/post/12">t</a><span dir="auto">保溫杯好難選</span></div>"""
+def soc_search_html():
+    now = time.time()
+    iso = lambda d: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - d * 86400))
+    return f"""<!doctype html><meta charset=utf-8><body>
+<div data-pressable-container="true"><a href="/@zoe">zoe</a><a href="/social/post/11">t</a><time datetime="{iso(2)}">2天</time><span dir="auto">最近想買保溫杯，有推薦的嗎</span></div>
+<div data-pressable-container="true"><a href="/@max">max</a><a href="/social/post/12">t</a><time datetime="{iso(30)}">1個月</time><span dir="auto">保溫杯好難選</span></div>"""
+
+
 SOC_FB = """<!doctype html><meta charset=utf-8><body>
 <div id=open onclick="openD()">建立貼文</div><div id=feed></div>
 <script>
@@ -109,7 +114,7 @@ class Mock(BaseHTTPRequestHandler):
         if u.path == "/social/fb":
             return self._send(SOC_FB, "text/html")
         if u.path == "/social/search":
-            return self._send(SOC_SEARCH, "text/html")
+            return self._send(soc_search_html(), "text/html")
         if u.path.startswith("/social/post/"):
             return self._send(SOC_POST, "text/html")
         if u.path == "/__log":
@@ -709,13 +714,11 @@ def test_publish_to_threads_preview_then_real_and_facebook_with_link_in_comment(
     prepare_posts(page, site)
     assert page.is_checked("#pPreview")                                   # 預設就是「只貼好」
     # 沒有分潤連結的商品不能發
-    page.locator("#postOut details.card", has_text="小風扇").locator("summary").first.click()
     page.locator("#postOut details.card", has_text="小風扇").locator("[data-post=threads]").first.click()
     assert "還沒轉成分潤連結" in wait_msg(page, "還沒轉成分潤連結")
     assert server_log(site)["social"]["posts"] == []
 
     card = page.locator("#postOut details.card", has_text="保溫杯")
-    card.locator("summary").first.click()
     card.locator("[data-post=threads]").first.click()
     assert "停在發佈前" in wait_msg(page, "停在發佈前")
     assert server_log(site)["social"]["posts"] == []                       # 預覽：沒有真的發
@@ -733,7 +736,6 @@ def test_publish_to_threads_preview_then_real_and_facebook_with_link_in_comment(
     wait_msg(page, "已產生")
     page.fill("#pFb", site + "/social/fb")
     page.dispatch_event("#pFb", "change")
-    page.locator("#postOut details.card", has_text="保溫杯").locator("summary").first.click()
     page.locator("#postOut details.card", has_text="保溫杯").locator("[data-post=facebook]").first.click()
     assert "已發到 Facebook" in wait_msg(page, "已發到 Facebook")
     log = server_log(site)["social"]["posts"]
@@ -749,7 +751,6 @@ def test_publish_failure_says_which_step_and_is_in_diagnostics(dash, site):
     page.dispatch_event("#pFb", "change")
     page.uncheck("#pPreview")
     card = page.locator("#postOut details.card", has_text="保溫杯")
-    card.locator("summary").first.click()
     card.locator("[data-post=facebook]").first.click()
     msg = wait_msg(page, "卡在")
     assert "卡在「開啟發文框」" in msg and "下載診斷檔" in msg, msg
@@ -758,13 +759,16 @@ def test_publish_failure_says_which_step_and_is_in_diagnostics(dash, site):
     page.check("#pPreview")
 
 
-def test_threads_search_then_reply_one_by_one_no_links(dash, site):
+def test_threads_search_only_keeps_recent_week_and_reply_one_by_one_no_links(dash, site):
     page = dash
     reset_state(page, site)
     page.fill("#leadKw", "保溫杯")
+    assert page.input_value("#leadDays") == "7"                              # 預設只看一週內
     page.click("#btnLeadSearch")
-    assert "新增 2 篇" in wait_msg(page, "新增 2 篇")
-    assert page.locator("#leadOut [data-lead]").count() == 2
+    msg = wait_msg(page, "新增 1 篇")
+    assert "7 天內的 1 篇" in msg and "太舊的 1 篇" in msg, msg               # 30 天前那篇被略過
+    assert page.locator("#leadOut [data-lead]").count() == 1
+    assert "@zoe" in page.inner_text("#leadOut") and "2 天前" in page.inner_text("#leadOut") and "max" not in page.inner_text("#leadOut")
     page.fill("#lead0", "快看 https://s.shopee.tw/AbC")                    # 不能放連結
     page.click("#leadOut [data-lead='0']")
     assert "不能放連結" in wait_msg(page, "不能放連結")
@@ -777,8 +781,19 @@ def test_threads_search_then_reply_one_by_one_no_links(dash, site):
     assert "已回覆" in wait_msg(page, "已回覆")
     rep = server_log(site)["social"]["replies"]
     assert len(rep) == 1 and rep[0]["text"].startswith("我也在找")          # 只回了按的那一篇
-    assert page.locator("#leadOut [data-lead]").count() == 1                # 回過的不再出現
-    assert page.inner_text("#replyCount") == "1"
-    page.click("#btnLeadSearch")                                           # 再搜一次，同一篇不會重複出現
+    assert page.locator("#leadOut [data-lead]").count() == 0 and page.inner_text("#replyCount") == "1"
+    page.select_option("#leadDays", "14")                                  # 14 天內，30 天前那篇還是不會出現
+    page.click("#btnLeadSearch")
     wait_msg(page, "新增 0 篇")
-    assert page.locator("#leadOut [data-lead]").count() == 1
+    assert page.locator("#leadOut [data-lead]").count() == 0
+
+
+def test_lead_search_product_fills_keyword_and_facebook_settings_are_visible(dash, site):
+    page = dash
+    prepare_posts(page, site)
+    assert page.is_visible("#pFb") and "發到 Facebook" in page.inner_text("#postCard")      # FB 發文設定一眼就看得到
+    assert page.locator("#postOut [data-post=facebook]").first.is_visible()                  # 前幾個商品預設展開，按鈕直接看得到
+    names = page.eval_on_selector_all("#leadProd option", "os => os.map(o => o.textContent)")
+    assert "保溫杯" in names and "小風扇" in names
+    page.select_option("#leadProd", label="保溫杯")
+    assert page.input_value("#leadKw") == "保溫杯"                          # 選商品會自動帶入關鍵字

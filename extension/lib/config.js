@@ -5,7 +5,7 @@
     shopeeBase: 'https://shopee.tw',
     affiliateBase: 'https://affiliate.shopee.tw',
     threadsHome: 'https://www.threads.com/',
-    threadsSearch: 'https://www.threads.com/search?q={q}&serp_type=default',
+    threadsSearch: 'https://www.threads.com/search?q={q}&serp_type=default&filter=recent',
     customLinkPath: '/offer/custom_link',
     quietMs: 7000,        // 捲到底後，多久沒有新商品就算讀完（限時特賣）
     searchQuietMs: 4000,  // 同上（搜尋頁，頁面短，等短一點）
